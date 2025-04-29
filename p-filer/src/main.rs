@@ -53,9 +53,9 @@ struct AppleDisk {
 }
 
 impl AppleDisk {
-    pub fn read_block(&self, index: usize) -> &[u8] {
+    pub fn read_blocks(&self, index: usize, count: usize) -> &[u8] {
         let start:usize = index * 512;
-        let end:usize = (index + 1) * 512;
+        let end:usize = (index + count) * 512;
         return &self.buffer[start..end]
     }
 
@@ -104,6 +104,29 @@ impl AppleDisk {
 
     fn list(&self) {
         println!("Listing files on {0}", self.image);
+        let buffer = self.read_blocks(2, 4);
+        let vol_info_ptr = buffer.as_ptr() as *const VolumeInfo;
+        let vol_info = unsafe {vol_info_ptr.read_unaligned() };
+        println!("First block (should be 0): {}", vol_info.first_system_block);
+        println!("First directory block (should be 6): {}", vol_info.first_directory_block);
+        println!("File type (should be 0): {}", vol_info.file_type);
+        println!("Volume name:      {}", pstring_to_string(&vol_info.volume_name));
+        println!("Number of blocks: {}", vol_info.num_blocks);
+        println!("Number of files:  {}", vol_info.num_files);
+        println!("Last access time: {}", vol_info.last_access_time);
+        println!("Date:             {}", pdate_to_string(vol_info.date));
+        println!("Reserved:         {:?}", vol_info.reserved);
+        for index in 0..vol_info.num_files {
+            let entry_ptr = unsafe {buffer.as_ptr().offset(((index + 1) * 26) as isize) as *const DirectoryEntry};
+            let entry = unsafe {entry_ptr.read_unaligned() };
+            println!("Entry {index}:");
+            println!("  First block:         {}", entry.first_block);
+            println!("  First block after:   {}", entry.first_after_block);
+            println!("  File type:           {}", entry.file_type);
+            println!("  Name:                {}", pstring_to_string(&entry.name));
+            println!("  Bytes in last block: {}", entry.bytes_in_last_block);
+            println!("  Date:                {}", pdate_to_string(entry.date));
+        }
     }
     
     fn remove(&self, name: &str) {
@@ -144,7 +167,7 @@ impl AppleDisk {
         println!("Dumping contexts of {0} from block {1} to {2}", self.image, from, to);
         let line_len = 16;
         for block_no in from..=to {
-            let block = self.read_block(block_no);
+            let block = self.read_blocks(block_no, 1);
             for line in 0..512/line_len {
                 let offset: usize = block_no * 512 + line * line_len;
                 print!("{:06x}  ", offset);
@@ -167,9 +190,11 @@ impl AppleDisk {
     }
 }
 
+// Directory entries are each 26 bytes. The first is a bit special, and contains information about the volume itself.
+// The rest are the files on the volume. Directory entries occupy blocks 2 through 5
+
 #[derive(Debug)]
 #[repr(C)]
-#[repr(packed)]
 struct VolumeInfo {
     first_system_block: u16, // always zero
     first_directory_block: u16, // always 6
@@ -179,17 +204,38 @@ struct VolumeInfo {
     num_files: u16, // number of files in directory
     last_access_time: u16, // last access time - always zero?
     date: u16, // date set by user
-    reserved: u32, // reserved for future use
+    reserved: [u8; 4], // reserved for future use
 }
 
 #[derive(Debug)]
 #[repr(C)]
-#[repr(packed)]
-struct directory_entry {
+struct DirectoryEntry {
     first_block: u16, // first block of file
     first_after_block: u16, // first block after file (last block + 1)
     file_type: u16, // type of file ()
     name: [u8; 16], // Pascal string - length is first byte
     bytes_in_last_block: u16, // number of bytes in last block
     date: u16, // modified date
+}
+
+fn pstring_to_string(pstring: &[u8]) -> String {
+    let len = pstring[0] as usize;
+    let mut result = String::new();
+    for i in 1..=len {
+        result.push(pstring[i] as char);
+    }
+    return result;
+}
+
+fn pdate_to_string(pdate: u16) -> String {
+    let mut year = (pdate & 0xfe00) >> 9;
+    let day = (pdate & 0x0f80) >> 7;
+    let month = pdate & 0x0F;
+    // year is 0-100, historically offset from 1900. Consider years "earlier" than 1970 to be 21st century
+    if year < 70 {
+        year += 2000;
+    } else {
+        year += 1900;
+    }
+    return format!("{:04}-{:02}-{:02}", year, month, day);
 }
