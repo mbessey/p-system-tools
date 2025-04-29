@@ -1,8 +1,8 @@
 use core::num;
-use std::{fs, usize};
+use std::{fs, u32, usize};
 use clap::{Args, Parser, Subcommand};
 
-/// Simple program to greet a person
+/// A command-file tool for manipulating Apple Pascal disk images
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 #[command(propagate_version = true)]
@@ -22,7 +22,7 @@ enum Commands {
     Change {from: String, to: String},
     Krunch,
     Zero,
-    Dump
+    Dump {from: usize, to: usize} 
 }
 
 #[derive(Args, Debug)]
@@ -43,10 +43,9 @@ fn main() {
         Commands::Change { from, to } => d.change(from, to),
         Commands::Krunch => d.krunch(),
         Commands::Zero => d.zero(),
-        Commands::Dump => d.dump()
+        Commands::Dump { from, to } => d.dump(*from, *to)
     }
 }
-
 
 struct AppleDisk {
     image: String,
@@ -132,26 +131,65 @@ impl AppleDisk {
         println!("Clearing directory on {0}", self.image);
     }
 
-    fn dump(&self) {
-        println!("Dumping contexts of {0}", self.image);
+    fn dump(&self, from: usize, to: usize) {
+        if from > to {
+            panic!("from ({from}) must be less than to ({to})");
+        }
+        if to > self.num_blocks() {
+            panic!("to ({to}) must be less than {0} blocks", self.num_blocks());
+        }
+        if from > self.num_blocks() {
+            panic!("from ({from}) must be less than {0} blocks", self.num_blocks());
+        }
+        println!("Dumping contexts of {0} from block {1} to {2}", self.image, from, to);
         let line_len = 16;
-        for line in 0..self.buffer.len() / line_len {
-            if line % 32 == 0 {
-                println!();
-            }
-            print!("{:06x}  ", line * line_len);
-            for byte in 0..line_len {
-                print!("{:02x} ", self.buffer[line*line_len+byte]);
-            }
-            print!("  |");
-            for byte in 0..line_len {
-                let mut c = self.buffer[line*line_len+byte];
-                if c < 32 || c > 126 {
-                    c = 46;
+        for block_no in from..=to {
+            let block = self.read_block(block_no);
+            for line in 0..512/line_len {
+                let offset: usize = block_no * 512 + line * line_len;
+                print!("{:06x}  ", offset);
+                for byte in 0..line_len {
+                    let val = block[byte + line * line_len];
+                    print!("{:02x} ", val);
                 }
-                print!("{}", char::from(c));
+                print!("  |");
+                for byte in 0..line_len {
+                    let mut c = block[byte + line * line_len];
+                    if c < 32 || c > 126 {
+                        c = 46;
+                    }
+                    print!("{}", char::from(c));
+                }
+                println!("|");
             }
-            println!("|");
+            println!("")
         }
     }
+}
+
+#[derive(Debug)]
+#[repr(C)]
+#[repr(packed)]
+struct VolumeInfo {
+    first_system_block: u16, // always zero
+    first_directory_block: u16, // always 6
+    file_type: u16, // always zero
+    volume_name: [u8; 8], // Pascal string - length is first byte
+    num_blocks: u16, // number of blocks in volume
+    num_files: u16, // number of files in directory
+    last_access_time: u16, // last access time - always zero?
+    date: u16, // date set by user
+    reserved: u32, // reserved for future use
+}
+
+#[derive(Debug)]
+#[repr(C)]
+#[repr(packed)]
+struct directory_entry {
+    first_block: u16, // first block of file
+    first_after_block: u16, // first block after file (last block + 1)
+    file_type: u16, // type of file ()
+    name: [u8; 16], // Pascal string - length is first byte
+    bytes_in_last_block: u16, // number of bytes in last block
+    date: u16, // modified date
 }
