@@ -9,7 +9,7 @@
             "type": "lldb",
             "request": "launch",
             "program": "${workspaceFolder}/target/debug/p-filer",
-            "args": ["--image", "/Users/mbessey/Documents/ApplePascal/manyfiles.dsk", "list"],
+            "args": ["--image", "/Users/mbessey/Documents/ApplePascal/apple1.dsk", "list"],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "cargo build",
         }

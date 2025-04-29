@@ -229,7 +229,7 @@ fn pstring_to_string(pstring: &[u8]) -> String {
 
 fn pdate_to_string(pdate: u16) -> String {
     let mut year = (pdate & 0xfe00) >> 9;
-    let day = (pdate & 0x0f80) >> 7;
+    let day = (pdate & 0x01f0) >> 4;
     let month = pdate & 0x0F;
     // year is 0-100, historically offset from 1900. Consider years "earlier" than 1970 to be 21st century
     if year < 70 {
