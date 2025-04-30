@@ -105,20 +105,19 @@ impl AppleDisk {
     fn list(&self) {
         println!("Listing files on {0}", self.image);
         let buffer = self.read_blocks(2, 4);
-        let vol_info_ptr = buffer.as_ptr() as *const VolumeInfo;
-        let vol_info = unsafe {vol_info_ptr.read_unaligned() };
-        println!("First block (should be 0): {}", vol_info.first_system_block);
-        println!("First directory block (should be 6): {}", vol_info.first_directory_block);
-        println!("File type (should be 0): {}", vol_info.file_type);
-        println!("Volume name:      {}", pstring_to_string(&vol_info.volume_name));
-        println!("Number of blocks: {}", vol_info.num_blocks);
-        println!("Number of files:  {}", vol_info.num_files);
-        println!("Last access time: {}", vol_info.last_access_time);
-        println!("Date:             {}", pdate_to_string(vol_info.date));
-        println!("Reserved:         {:?}", vol_info.reserved);
-        for index in 0..vol_info.num_files {
-            let entry_ptr = unsafe {buffer.as_ptr().offset(((index + 1) * 26) as isize) as *const DirectoryEntry};
-            let entry = unsafe {entry_ptr.read_unaligned() };
+        let directory_ptr = buffer.as_ptr() as *const Directory;
+        let directory = unsafe {directory_ptr.read_unaligned() };
+        println!("First block (should be 0): {}", directory.volume.first_system_block);
+        println!("First directory block (should be 6): {}", directory.volume.first_directory_block);
+        println!("File type (should be 0): {}", directory.volume.file_type);
+        println!("Volume name:      {}", pstring_to_string(&directory.volume.volume_name));
+        println!("Number of blocks: {}", directory.volume.num_blocks);
+        println!("Number of files:  {}", directory.volume.num_files);
+        println!("Last access time: {}", directory.volume.last_access_time);
+        println!("Date:             {}", pdate_to_string(directory.volume.date));
+        println!("Reserved:         {:?}", directory.volume.reserved);
+        for index in 0..directory.volume.num_files {
+            let entry = &directory.entries[index as usize];
             println!("Entry {index}:");
             println!("  First block:         {}", entry.first_block);
             println!("  First block after:   {}", entry.first_after_block);
@@ -136,8 +135,23 @@ impl AppleDisk {
     fn transfer(&self, name: &str, to_image: bool) {
         if to_image {
             println!("Copying {name} to {0}", self.image);
+            todo!("Copying to image not implemented yet");
         } else {
+            let buffer = self.read_blocks(2, 4);
+            let directory_ptr = buffer.as_ptr() as *const Directory;
+            let directory = unsafe {directory_ptr.read_unaligned() };
             println!("Copying {name} from {0}", self.image);
+            for entry in &directory.entries {
+                let entry_name = pstring_to_string(&entry.name);
+                if entry_name == name {
+                    println!("Found {name} at block {0}", entry.first_block);
+                    let file_buffer = self.read_blocks(entry.first_block as usize, entry.first_after_block as usize - entry.first_block as usize);
+                    let file_name = format!("{name}");
+                    fs::write(file_name, file_buffer).expect("Unable to write file");
+                    println!("Wrote {name} to disk");
+                    return;
+                }
+            }
         }
     }
     
@@ -191,7 +205,13 @@ impl AppleDisk {
 }
 
 // Directory entries are each 26 bytes. The first is a bit special, and contains information about the volume itself.
-// The rest are the files on the volume. Directory entries occupy blocks 2 through 5
+// The rest are the files on the volume. Directory entries occupy blocks 2 through 5 on the disk.
+#[derive(Debug)]
+#[repr(C)]
+struct Directory {
+    volume: VolumeInfo,
+    entries: [DirectoryEntry; 77],
+}
 
 #[derive(Debug)]
 #[repr(C)]
