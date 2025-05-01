@@ -28,8 +28,10 @@ enum Commands {
 #[derive(Args, Debug)]
 struct TransferArgs {
     name: String,
-    #[arg(short, long)]
-    to_image: bool
+    #[arg(long)]
+    to_image: bool,
+    #[arg(long)]
+    text: bool
 }
 
 fn main() {
@@ -39,7 +41,7 @@ fn main() {
     match &args.command {
         Commands::List => d.list(),
         Commands::Remove { name } => d.remove(name),
-        Commands::Transfer(args, ) => d.transfer(&args.name, args.to_image),
+        Commands::Transfer(args, ) => d.transfer(&args.name, args.to_image, args.text),
         Commands::Change { from, to } => d.change(from, to),
         Commands::Krunch => d.krunch(),
         Commands::Zero => d.zero(),
@@ -132,7 +134,7 @@ impl AppleDisk {
         println!("Removing {name} on {0}", self.image);
     }
     
-    fn transfer(&self, name: &str, to_image: bool) {
+    fn transfer(&self, name: &str, to_image: bool, is_text: bool) {
         if to_image {
             println!("Copying {name} to {0}", self.image);
             todo!("Copying to image not implemented yet");
@@ -147,7 +149,12 @@ impl AppleDisk {
                     println!("Found {name} at block {0}", entry.first_block);
                     let file_buffer = self.read_blocks(entry.first_block as usize, entry.first_after_block as usize - entry.first_block as usize);
                     let file_name = format!("{name}");
-                    fs::write(file_name, file_buffer).expect("Unable to write file");
+                    if is_text {
+                        let text_buffer = text_from(file_buffer);
+                        fs::write(file_name, text_buffer).expect("Unable to write text file");
+                    } else {
+                        fs::write(file_name, file_buffer).expect("Unable to write binary file");
+                    }
                     println!("Wrote {name} to disk");
                     return;
                 }
@@ -258,4 +265,30 @@ fn pdate_to_string(pdate: u16) -> String {
         year += 1900;
     }
     return format!("{:04}-{:02}-{:02}", year, month, day);
+}
+
+fn text_from(buffer: &[u8]) -> Vec<u8> {
+    let mut result = Vec::new();
+    let mut skip_next = false;
+    for i in 1025..buffer.len() {
+        let byte = buffer[i];
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if byte == 0x0d {
+            result.push(0x0a); // convert CR to LF
+        } else if byte == 0x10 {
+            let space_count = buffer[i+1] as usize - 32;
+            for _ in 0..space_count {
+                result.push(0x20); // emit spaces for indent
+            }
+            skip_next = true; // skip the next byte
+        } else if byte == 0 {
+            continue; // skip null bytes
+        } else {
+            result.push(byte);
+        }
+    }
+    return result;
 }

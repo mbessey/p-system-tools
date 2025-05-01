@@ -9,7 +9,8 @@
             "type": "lldb",
             "request": "launch",
             "program": "${workspaceFolder}/target/debug/p-filer",
-            "args": ["--image", "/Users/mbessey/Documents/ApplePascal/blog.dsk", "transfer", "EDITOR.TEXT"],
+            "args": ["--image", "/Users/mbessey/Documents/ApplePascal/blog.dsk", "transfer", "--text", "FILESYSTEM.TEXT"],
+            // "args": ["--image", "/Users/mbessey/Documents/ApplePascal/blog.dsk", "list"],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "cargo build",
         }
