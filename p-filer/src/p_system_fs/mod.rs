@@ -21,7 +21,7 @@ impl Directory {
 #[repr(C)]
 struct VolumeInfo {
     first_system_block: u16, // always zero
-    first_directory_block: u16, // always 6
+    first_block_after_directory: u16, // always 6
     file_type: u16, // always zero
     volume_name: [u8; 8], // Pascal string - length is first byte
     num_blocks: u16, // number of blocks in volume
@@ -151,7 +151,7 @@ impl AppleDisk {
     pub fn list(&self) {
         println!("Listing files on {0}", self.image);
         println!("First block (should be 0): {}", self.directory.volume.first_system_block);
-        println!("First directory block (should be 6): {}", self.directory.volume.first_directory_block);
+        println!("First block after directory (should be 6): {}", self.directory.volume.first_block_after_directory);
         println!("File type (should be 0): {}", self.directory.volume.file_type);
         println!("Volume name:      {}", pstring_to_string(&self.directory.volume.volume_name));
         println!("Number of blocks: {}", self.directory.volume.num_blocks);
