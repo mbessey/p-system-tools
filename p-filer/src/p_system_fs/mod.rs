@@ -67,7 +67,7 @@ pub fn pdate_to_string(pdate: u16) -> String {
 pub fn text_from_blocks(buffer: &[u8]) -> Vec<u8> {
     let mut result = Vec::new();
     let mut skip_next = false;
-    for i in 1025..buffer.len() {
+    for i in 1024..buffer.len() {
         let byte = buffer[i];
         if skip_next {
             skip_next = false;
