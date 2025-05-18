@@ -25,7 +25,7 @@ struct CodeInfo {
     length: u16,
 }
 
-#[repr(i32)]
+#[repr(u16)]
 #[derive(Debug, Clone, Copy)]
 enum SegmentKind {
     Linked,
@@ -81,7 +81,10 @@ fn list(file_name: String) {
         }
         let seg_name = segment_dictionary.seg_name[s];
         let seg_kind = segment_dictionary.seg_kind[s];
-        println!("Segment {:#x?}, name: {}, address: {:#x?}, length: {:#x?}, kind: {:?}", s, string_from(&seg_name), code_info.address*512, code_info.length, seg_kind);
+        let text_addr = segment_dictionary.text_addr[s];
+        let seg_info = segment_dictionary.seg_info[s];
+
+        println!("Segment {:#x?}, name: {}, address: {:#x?}, length: {:#x?}, kind: {:?}, text_addr: {:#x?}, seg_info: {:#x?}", s, string_from(&seg_name), code_info.address*512, code_info.length, seg_kind, text_addr, seg_info);
     }
     println!();
 }
