@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{builder::Str, Args, Parser, Subcommand};
 
 /// A command-file tool for manipulating UCSD pascal object files
 #[derive(Parser)]
@@ -84,7 +84,7 @@ fn list(file_name: String) {
         let text_addr = segment_dictionary.text_addr[s];
         let seg_info = segment_dictionary.seg_info[s];
 
-        println!("Segment {:#x?}, name: {}, address: {:#x?}, length: {:#x?}, kind: {:?}, text_addr: {:#x?}, seg_info: {:#x?}", s, string_from(&seg_name), code_info.address*512, code_info.length, seg_kind, text_addr, seg_info);
+        println!("Segment {:#x?}, name: {}, address: {:#x?}, length: {:#x?}, kind: {:?}, text_addr: {:#x?}, seg_info: {:#x?}", s, string_from(&seg_name), code_info.address*512, code_info.length, seg_kind, text_addr, string_from_segment_info(seg_info));
     }
     println!();
 }
@@ -101,5 +101,19 @@ fn string_from(pascalString8: &[u8;8]) -> String {
         }
         result.push(*c as char);
     }
+    return result;
+}
+
+fn string_from_segment_info(segment_info: u16) -> String {
+    let unit = segment_info & 0xff;
+    let code_type = (segment_info & 0x0f00) >> 8;
+    let type_s = match code_type {
+        0 => "Unknown",
+        1 => "Pcode Big-endian",
+        2 => "Pcode Little-endian",
+        _ => "Native code"
+    };
+    let version = (segment_info & 0xe000) >> 13;    
+    let result = format!("[unit: {}, type: {}, version: {}]", unit, type_s, version);
     return result;
 }
