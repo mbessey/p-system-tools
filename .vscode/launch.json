@@ -13,6 +13,15 @@
             // "args": ["--image", "/Users/mbessey/Documents/ApplePascal/blog.dsk", "list"],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "cargo build",
-        }
+        },
+        {
+            "name": "Debug code",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/target/debug/p-code",
+            "args": ["--code-file", "/Users/mbessey/Documents/Projects/p-system-tools/tests/HelloWorld.code", "list"],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cargo build",
+        },
     ]
 }

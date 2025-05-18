@@ -1,4 +1,6 @@
 [workspace]
-members = [
+resolver = "3"
+members = [ 
+    "p-code",
     "p-filer",
 ]

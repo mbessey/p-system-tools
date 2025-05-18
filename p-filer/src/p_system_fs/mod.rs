@@ -1,4 +1,4 @@
-use std::{fs, ptr::read_unaligned};
+use std::fs;
 
 // Directory entries are each 26 bytes. The first is a bit special, and contains information about the volume itself.
 // The rest are the files on the volume. Directory entries occupy blocks 2 through 5 on the disk.
