@@ -110,12 +110,11 @@ impl AppleDisk {
     pub fn new(name: &str) -> Self {
         let buffer = Self::read_buffer(&name);
         let directory = Directory::new(&buffer[1024..2560]);
-        let mut new_self = Self {
+        Self {
             image: name.to_string(),
             blocks: buffer,
             directory: directory
-        };
-        return new_self;
+        }
     }
 
     fn read_buffer(name: &str) -> Vec<u8> {
