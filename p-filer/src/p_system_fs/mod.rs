@@ -1,4 +1,8 @@
 use std::fs;
+use std::fs::File;
+use std::io::prelude::*;
+use std::time::SystemTime;
+use chrono::prelude::*;
 
 // Directory entries are each 26 bytes. The first is a bit special, and contains information about the volume itself.
 // The rest are the files on the volume. Directory entries occupy blocks 2 through 5 on the disk.
@@ -49,6 +53,28 @@ pub fn pstring_to_string(pstring: &[u8]) -> String {
         result.push(pstring[i] as char);
     }
     return result;
+}
+
+pub fn pdate_to_systime(pdate: u16) -> SystemTime {
+    // Uggh pardon copy/paste from pdate_to_string, but we do need to convert
+    // to appropriate types so I did it here.  We can probably Do Better.
+    let mut year = ((pdate & 0xfe00) >> 9) as i32;
+    let day = ((pdate & 0x01f0) >> 4) as u32;
+    let month = (pdate & 0x0F) as u32;
+
+    // year is 0-100, historically offset from 1900. Consider years "earlier" than 1970 to be 21st century
+    if year < 70 {
+        year += 2000;
+    } else {
+        year += 1900;
+    }
+
+    // Meanwhile, since we only get day (not time) we will set it to 0000
+    // in whatever timezone TZ is set to. This may cause off-by-one-day
+    // problems in the timestamp.
+
+    return SystemTime::from(
+        Local.with_ymd_and_hms(year, month, day, 0, 0, 0).unwrap());
 }
 
 pub fn pdate_to_string(pdate: u16) -> String {
@@ -174,7 +200,8 @@ impl AppleDisk {
         println!("Removing {name} on {0}", self.image);
     }
     
-    pub fn transfer(&self, name: &str, to_image: bool, is_text: bool) {
+    pub fn transfer(&self, name: &str, to_image: bool, is_text: bool,
+        preserve_date: bool) {
         if to_image {
             println!("Copying {name} to {0}", self.image);
             todo!("Copying to image not implemented yet");
@@ -186,13 +213,21 @@ impl AppleDisk {
                     println!("Found {name} at block {0}", entry.first_block);
                     let file_buffer = self.read_blocks(entry.first_block as usize, entry.first_after_block as usize - entry.first_block as usize);
                     let file_name = format!("{name}");
+		    // Because we want to possibly use set_times, we'll
+		    // have to use more conventional File:: methods.
+		    let mut filedesc = File::create(file_name).expect("create failed");
                     if is_text {
                         let text_buffer = text_from_blocks(file_buffer);
-                        fs::write(file_name, text_buffer).expect("Unable to write text file");
+			let _ = filedesc.write(text_buffer.as_slice());
                     } else {
-                        fs::write(file_name, file_buffer).expect("Unable to write binary file");
+		      	let _ = filedesc.write(file_buffer);
                     }
                     println!("Wrote {name} to disk");
+		    if preserve_date {
+		        let _ =
+			    filedesc.set_modified(pdate_to_systime(entry.date));
+		    }
+		    filedesc.sync_all().expect("Cannot commit to file");
                     return;
                 }
             }
