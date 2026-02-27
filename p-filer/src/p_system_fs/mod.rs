@@ -213,21 +213,21 @@ impl AppleDisk {
                     println!("Found {name} at block {0}", entry.first_block);
                     let file_buffer = self.read_blocks(entry.first_block as usize, entry.first_after_block as usize - entry.first_block as usize);
                     let file_name = format!("{name}");
-		    // Because we want to possibly use set_times, we'll
-		    // have to use more conventional File:: methods.
-		    let mut filedesc = File::create(file_name).expect("create failed");
+                    // Because we want to possibly use set_times, we'll
+                    // have to use more conventional File:: methods.
+                    let mut filedesc = File::create(file_name).expect("create failed");
                     if is_text {
                         let text_buffer = text_from_blocks(file_buffer);
-			let _ = filedesc.write(text_buffer.as_slice());
+                        let _ = filedesc.write(text_buffer.as_slice());
                     } else {
-		      	let _ = filedesc.write(file_buffer);
+                        let _ = filedesc.write(file_buffer);
                     }
                     println!("Wrote {name} to disk");
-		    if preserve_date {
-		        let _ =
-			    filedesc.set_modified(pdate_to_systime(entry.date));
-		    }
-		    filedesc.sync_all().expect("Cannot commit to file");
+                    if preserve_date {
+                        let _ =
+                            filedesc.set_modified(pdate_to_systime(entry.date));
+                    }
+                    filedesc.sync_all().expect("Cannot commit to file");
                     return;
                 }
             }
