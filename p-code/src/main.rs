@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+mod opcodes;
 
 /// A command-file tool for manipulating UCSD pascal object files
 #[derive(Parser)]
@@ -69,7 +70,7 @@ fn main() {
     let file_name = args.code_file;
     match &args.command {
         Commands::List => list(file_name),
-        Commands::Disassemble => disassemble(file_name),
+        Commands::Disassemble => disassemble_file(file_name),
     }
 }
 
@@ -100,8 +101,31 @@ fn list(file_name: String) {
     println!();
 }
 
-fn disassemble(file_name: String) {
+fn disassemble_file(file_name: String) {
     println!("Disassembling code file {file_name}");
+    let contents = std::fs::read(file_name).expect("Unable to read file");
+    let segment_dictionary = SegmentDictionary::new(&contents);
+    println!("File length: {}", contents.len());
+    println!("Segments:");
+    for s in 0..16 {
+        let code_info = segment_dictionary.code_info[s];
+        if code_info.address == 0 {
+            continue;
+        }
+        let seg_name = segment_dictionary.seg_name[s];
+        let seg_kind = segment_dictionary.seg_kind[s];
+        let text_addr = segment_dictionary.text_addr[s];
+        let seg_info = segment_dictionary.seg_info[s];
+
+        println!("Segment {:#x?}, name: {}, address: {:#x?}, length: {:#x?},", s, string_from(&seg_name), code_info.address*512, code_info.length);
+        println!("\t kind: {:?}, text_addr: {:#x?}, seg_info: {:#x?}", seg_kind, text_addr, string_from_segment_info(seg_info));
+        let code_type = (seg_info & 0x0f00) >> 8;
+        if code_type == 2 {
+            println!("Disassembling segment {}", string_from(&seg_name));
+            println!("{} ", crate::opcodes::disassembly(&contents, code_info.address * 512, code_info.length));
+        }
+    }
+    println!();
 }
 
 fn string_from(pascal_string8: &[u8;8]) -> String {

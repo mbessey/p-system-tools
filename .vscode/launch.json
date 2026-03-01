@@ -19,7 +19,7 @@
             "type": "lldb",
             "request": "launch",
             "program": "${workspaceFolder}/target/debug/p-code",
-            "args": ["--code-file", "/Users/mbessey/Documents/Projects/p-system-tools/tests/HelloWorld.code", "list"],
+            "args": ["--code-file", "/Users/mbessey/Documents/Projects/p-system-tools/tests/HelloWorld.code", "disassemble"],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "cargo build",
         },
