@@ -70,7 +70,7 @@ fn normalize_pdate_year(pdate: u16) -> i32
     // We'll have overlap in 2001-2027
     if offset < 70 {
         // If before 1970, assume it's 20xx.
-        return offset + 1900;
+        return offset + 2000;
     }
 
     return offset + 1900;
