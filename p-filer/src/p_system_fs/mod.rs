@@ -1,4 +1,8 @@
 use std::fs;
+use std::fs::File;
+use std::io::prelude::*;
+use std::time::SystemTime;
+use chrono::prelude::*;
 
 // Directory entries are each 26 bytes. The first is a bit special, and contains information about the volume itself.
 // The rest are the files on the volume. Directory entries occupy blocks 2 through 5 on the disk.
@@ -51,17 +55,52 @@ pub fn pstring_to_string(pstring: &[u8]) -> String {
     return result;
 }
 
-pub fn pdate_to_string(pdate: u16) -> String {
-    let mut year = (pdate & 0xfe00) >> 9;
-    let day = (pdate & 0x01f0) >> 4;
-    let month = pdate & 0x0F;
-    // year is 0-100, historically offset from 1900. Consider years "earlier" than 1970 to be 21st century
-    if year < 70 {
-        year += 2000;
-    } else {
-        year += 1900;
+struct PdateYDM {
+    // These types picked to be friendly for conversion to system time.
+    year: i32,
+    day: u32,
+    month: u32,
+}
+
+fn normalize_pdate_year(pdate: u16) -> i32
+{
+    let offset = ((pdate & 0xfe00) >> 9) as i32;
+
+    // This logic assumes "offset" is between 0-100.  If it's ever > 100,
+    // We'll have overlap in 2001-2027
+    if offset < 70 {
+        // If before 1970, assume it's 20xx.
+        return offset + 2000;
     }
-    return format!("{:04}-{:02}-{:02}", year, month, day);
+
+    return offset + 1900;
+}
+
+impl PdateYDM {
+    fn new(pdate: u16) -> PdateYDM {
+        PdateYDM {
+            year: normalize_pdate_year(pdate),
+            day: ((pdate & 0x01f0) >> 4) as u32,
+            month: (pdate & 0x0F) as u32,
+        }
+    }
+}
+
+pub fn pdate_to_systime(pdate: u16) -> SystemTime {
+    let ydm = PdateYDM::new(pdate);
+
+    // Meanwhile, since we only get day (not time) we will set it to 0000
+    // in whatever timezone TZ is set to. This may cause off-by-one-day
+    // problems in the timestamp.
+
+    return SystemTime::from(
+        Local.with_ymd_and_hms(ydm.year, ydm.month, ydm.day, 0, 0, 0).unwrap());
+}
+
+pub fn pdate_to_string(pdate: u16) -> String {
+    let ydm = PdateYDM::new(pdate);
+
+    return format!("{:04}-{:02}-{:02}", ydm.year, ydm.month, ydm.day);
 }
 
 pub fn text_from_blocks(buffer: &[u8]) -> Vec<u8> {
@@ -174,7 +213,8 @@ impl AppleDisk {
         println!("Removing {name} on {0}", self.image);
     }
     
-    pub fn transfer(&self, name: &str, to_image: bool, is_text: bool) {
+    pub fn transfer(&self, name: &str, to_image: bool, is_text: bool,
+        preserve_date: bool) {
         if to_image {
             println!("Copying {name} to {0}", self.image);
             todo!("Copying to image not implemented yet");
@@ -186,13 +226,21 @@ impl AppleDisk {
                     println!("Found {name} at block {0}", entry.first_block);
                     let file_buffer = self.read_blocks(entry.first_block as usize, entry.first_after_block as usize - entry.first_block as usize);
                     let file_name = format!("{name}");
+                    // Because we want to possibly use set_times, we'll
+                    // have to use more conventional File:: methods.
+                    let mut filedesc = File::create(file_name).expect("create failed");
                     if is_text {
                         let text_buffer = text_from_blocks(file_buffer);
-                        fs::write(file_name, text_buffer).expect("Unable to write text file");
+                        let _ = filedesc.write(text_buffer.as_slice());
                     } else {
-                        fs::write(file_name, file_buffer).expect("Unable to write binary file");
+                        let _ = filedesc.write(file_buffer);
                     }
                     println!("Wrote {name} to disk");
+                    if preserve_date {
+                        let _ =
+                            filedesc.set_modified(pdate_to_systime(entry.date));
+                    }
+                    filedesc.sync_all().expect("Cannot commit to file");
                     return;
                 }
             }

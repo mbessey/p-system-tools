@@ -32,7 +32,9 @@ struct TransferArgs {
     #[arg(long)]
     to_image: bool,
     #[arg(long)]
-    text: bool
+    text: bool,
+    #[arg(long, short)]
+    preserve_date: bool,
 }
 
 fn main() {
@@ -42,7 +44,7 @@ fn main() {
     match &args.command {
         Commands::List => d.list(),
         Commands::Remove { name } => d.remove(name),
-        Commands::Transfer(args, ) => d.transfer(&args.name, args.to_image, args.text),
+        Commands::Transfer(args, ) => d.transfer(&args.name, args.to_image, args.text, args.preserve_date),
         Commands::Change { from, to } => d.change(from, to),
         Commands::Krunch => d.krunch(),
         Commands::Zero => d.zero(),
