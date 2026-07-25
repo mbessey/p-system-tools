@@ -19,6 +19,7 @@ pub fn run(file_name: String) {
         let segment_bytes = &contents[start..end];
 
         println!("Segment {s} ({seg_name}):");
+        println!("  (offset within segment; segment starts at file offset {start:#x})");
         match disassembler::parse_procedure_dictionary(segment_bytes) {
             Some(dict) => {
                 println!("  (SEGTABLE slot {})", dict.segment_number);
