@@ -1,7 +1,10 @@
 use std::usize;
 use clap::{Args, Parser, Subcommand};
+mod disk_image;
+mod apple_disk;
 mod p_system_fs;
-use p_system_fs::AppleDisk;
+use apple_disk::AppleDisk;
+use p_system_fs::Volume;
 
 /// A command-file tool for manipulating Apple Pascal disk images
 #[derive(Parser)]
@@ -40,7 +43,7 @@ struct TransferArgs {
 fn main() {
     let args = MainArgs::parse();
     let image = args.image;
-    let d = AppleDisk::new(&image);
+    let d = Volume::new(AppleDisk::from_file(&image), image);
     match &args.command {
         Commands::List => d.list(),
         Commands::Remove { name } => d.remove(name),

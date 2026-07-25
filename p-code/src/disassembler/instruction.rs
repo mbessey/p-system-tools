@@ -1,0 +1,62 @@
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mnemonic {
+    SLDC, ABI, ABR, ADI, ADR, LAND, DIF, DVI, DVR, CHK, FLO, FLT, INN, INT, LOR,
+    MODI, MPI, MPR, NGI, NGR, LNOT, SRS, SBI, SBR, SGS, SQI, SQR, STO, IXS, UNI,
+    LDE, CSP, LDCN, ADJ, FJP, INC, IND, IXA, LAO, LSA, LAE, MOV, LDO, SAS, SRO,
+    XJP, RNP, CIP, EQU, GEQ, GRT, LDA, LDC, LEQ, LES, LOD, NEQ, STR, UJP, LDP,
+    STP, LDM, STM, LDB, STB, IXP, RBP, CBP, EQUI, GEQI, GRTI, LLA, LDCI, LEQI,
+    LESI, LDL, NEQI, STL, CXP, CLP, CGP, LPA, STE, EFJ, NFJ, BPT, XIT, NOP,
+    SLDL, SLDO, SIND,
+    UNKNOWN,
+}
+
+#[derive(Debug, Clone)]
+pub enum Operand {
+    None,
+    Embedded(u8),
+    U8(u8),
+    I8(i8),
+    Big(u16),
+    U8Big(u8, u16),
+    U8U8(u8, u8),
+    Word(u16),
+    TypeCompare(u8, Option<u16>),
+    StringData(Vec<u8>),
+    WordData(Vec<u8>),
+    CaseJump { low: i16, high: i16, default: i8, offsets: Vec<i16> },
+}
+
+#[derive(Debug, Clone)]
+pub struct Instruction {
+    pub offset: usize,
+    pub bytes_len: usize,
+    pub mnemonic: Mnemonic,
+    pub operand: Operand,
+}
+
+impl Instruction {
+    pub fn raw_bytes<'a>(&self, code: &'a [u8]) -> &'a [u8] {
+        code.get(self.offset..self.offset + self.bytes_len).unwrap_or(&[])
+    }
+}
+
+pub fn csp_name(sub_opcode: u8) -> Option<&'static str> {
+    match sub_opcode {
+        1 => Some("NEW"),
+        2 => Some("MVL"),
+        3 => Some("MVR"),
+        4 => Some("EXIT"),
+        7 => Some("IDS"),
+        9 => Some("TIM"),
+        10 => Some("FLC"),
+        11 => Some("SCN"),
+        22 => Some("TNC"),
+        23 => Some("RND"),
+        31 => Some("MRK"),
+        32 => Some("RLS"),
+        35 => Some("POT"),
+        98 => Some("TRS"),
+        _ => None,
+    }
+}

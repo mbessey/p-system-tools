@@ -238,14 +238,22 @@ name = "p-code"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "p-system-format",
 ]
 
 [[package]]
 name = "p-filer"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "clap",
+ "p-system-format",
+]
+
+[[package]]
+name = "p-system-format"
+version = "0.1.0"
+dependencies = [
+ "chrono",
 ]
 
 [[package]]

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
-members = [ 
+members = [
     "p-code",
     "p-filer",
+    "p-system-format",
 ]
