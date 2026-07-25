@@ -21,7 +21,11 @@ struct MainArgs {
 #[derive(Subcommand)]
 enum Commands {
     List,
-    Disassemble,
+    Disassemble {
+        /// Show each instruction's raw hex bytes and offset within the segment
+        #[arg(long)]
+        bytes: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -35,7 +39,7 @@ fn main() -> anyhow::Result<()> {
     let file_name = args.code_file;
     match &args.command {
         Commands::List => commands::list::run(file_name)?,
-        Commands::Disassemble => commands::disassemble::run(file_name)?,
+        Commands::Disassemble { bytes } => commands::disassemble::run(file_name, *bytes)?,
     }
     Ok(())
 }

@@ -2,7 +2,7 @@ use crate::disassembler;
 use crate::segment_dictionary::SegmentDictionary;
 use std::fmt::Write as _;
 
-pub fn run(file_name: String) -> anyhow::Result<()> {
+pub fn run(file_name: String, show_bytes: bool) -> anyhow::Result<()> {
     println!("Disassembling code file {file_name}");
     let contents = std::fs::read(&file_name)?;
     let segment_dictionary = SegmentDictionary::parse(&contents)?;
@@ -19,7 +19,9 @@ pub fn run(file_name: String) -> anyhow::Result<()> {
         let segment_bytes = &contents[start..end];
 
         println!("Segment {s} ({seg_name}):");
-        println!("  (offset within segment; segment starts at file offset {start:#x})");
+        if show_bytes {
+            println!("  (offset within segment; segment starts at file offset {start:#x})");
+        }
         match disassembler::parse_procedure_dictionary(segment_bytes) {
             Some(dict) => {
                 println!("  (SEGTABLE slot {})", dict.segment_number);
@@ -36,12 +38,12 @@ pub fn run(file_name: String) -> anyhow::Result<()> {
                     // rather than showing whatever comes after it as if it
                     // were real code.
                     let stop_after = proc.exit_ic.saturating_sub(proc.enter_ic);
-                    print_instructions(code, proc.enter_ic, Some(stop_after));
+                    print_instructions(code, proc.enter_ic, Some(stop_after), show_bytes);
                 }
             }
             None => {
                 println!("  (couldn't parse procedure dictionary; showing raw decode)");
-                print_instructions(segment_bytes, 0, None);
+                print_instructions(segment_bytes, 0, None, show_bytes);
             }
         }
         println!();
@@ -49,7 +51,12 @@ pub fn run(file_name: String) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_instructions(code: &[u8], base_offset: usize, stop_after: Option<usize>) {
+fn print_instructions(
+    code: &[u8],
+    base_offset: usize,
+    stop_after: Option<usize>,
+    show_bytes: bool,
+) {
     let mut instrs = disassembler::disassemble(code);
     if let Some(stop_at) = stop_after {
         if let Some(last) = instrs.iter().position(|i| stop_at < i.offset + i.bytes_len) {
@@ -57,11 +64,6 @@ fn print_instructions(code: &[u8], base_offset: usize, stop_after: Option<usize>
         }
     }
     for instr in instrs {
-        let raw = instr.raw_bytes(code);
-        let mut hex = String::with_capacity(raw.len() * 3);
-        for b in raw {
-            let _ = write!(hex, "{b:02x} ");
-        }
         let extra = match (instr.mnemonic, &instr.operand) {
             (disassembler::Mnemonic::CSP, disassembler::Operand::U8(sub)) => {
                 disassembler::csp_name(*sub)
@@ -70,19 +72,33 @@ fn print_instructions(code: &[u8], base_offset: usize, stop_after: Option<usize>
             }
             _ => String::new(),
         };
-        println!(
-            "    {:04x}  {:<18} {:?}  {}{}",
-            base_offset + instr.offset,
-            hex,
-            instr.mnemonic,
-            format_operand(&instr.operand),
-            extra
-        );
+        if show_bytes {
+            let raw = instr.raw_bytes(code);
+            let mut hex = String::with_capacity(raw.len() * 3);
+            for b in raw {
+                let _ = write!(hex, "{b:02x} ");
+            }
+            println!(
+                "    {:04x}  {:<18} {:?}  {}{}",
+                base_offset + instr.offset,
+                hex,
+                instr.mnemonic,
+                format_operand(instr.mnemonic, &instr.operand),
+                extra
+            );
+        } else {
+            println!(
+                "{:?}  {}{}",
+                instr.mnemonic,
+                format_operand(instr.mnemonic, &instr.operand),
+                extra
+            );
+        }
     }
 }
 
-fn format_operand(operand: &disassembler::Operand) -> String {
-    use disassembler::Operand;
+fn format_operand(mnemonic: disassembler::Mnemonic, operand: &disassembler::Operand) -> String {
+    use disassembler::{Mnemonic, Operand};
     match operand {
         Operand::None => String::new(),
         Operand::Embedded(v) => format!("{v}"),
@@ -94,8 +110,22 @@ fn format_operand(operand: &disassembler::Operand) -> String {
         Operand::Word(v) => format!("{v}"),
         Operand::TypeCompare(t, None) => format!("{t}"),
         Operand::TypeCompare(t, Some(b)) => format!("{t},{b}"),
-        Operand::StringData(bytes) => format!("{:?}", String::from_utf8_lossy(bytes)),
-        Operand::WordData(bytes) => format!("{} words", bytes.len() / 2),
+        // LSA loads the address of a string constant -- show it as text.
+        Operand::StringData(bytes) if mnemonic == Mnemonic::LSA => {
+            format!("{:?}", String::from_utf8_lossy(bytes))
+        }
+        // Other block-argument opcodes (currently just LPA, a packed
+        // constant array) aren't text -- show the raw byte values.
+        Operand::StringData(bytes) => bytes
+            .iter()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+        Operand::WordData(bytes) => bytes
+            .chunks_exact(2)
+            .map(|w| u16::from_le_bytes([w[0], w[1]]).to_string())
+            .collect::<Vec<_>>()
+            .join(","),
         Operand::CaseJump {
             low,
             high,
@@ -104,5 +134,33 @@ fn format_operand(operand: &disassembler::Operand) -> String {
         } => {
             format!("{low}..{high} default {default} table {offsets:?}")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use disassembler::{Mnemonic, Operand};
+
+    #[test]
+    fn lsa_renders_as_quoted_string() {
+        let operand = Operand::StringData(b"Enter your name:".to_vec());
+        assert_eq!(
+            format_operand(Mnemonic::LSA, &operand),
+            "\"Enter your name:\""
+        );
+    }
+
+    #[test]
+    fn lpa_renders_as_comma_separated_bytes() {
+        let operand = Operand::StringData(vec![1, 2, 255]);
+        assert_eq!(format_operand(Mnemonic::LPA, &operand), "1,2,255");
+    }
+
+    #[test]
+    fn ldc_renders_as_comma_separated_words() {
+        // little-endian word pairs: 0x0001, 0x0002, 0xffff
+        let operand = Operand::WordData(vec![0x01, 0x00, 0x02, 0x00, 0xff, 0xff]);
+        assert_eq!(format_operand(Mnemonic::LDC, &operand), "1,2,65535");
     }
 }
