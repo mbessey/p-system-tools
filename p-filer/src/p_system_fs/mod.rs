@@ -127,7 +127,7 @@ pub fn text_from_blocks(buffer: &[u8]) -> Vec<u8> {
         }
     }
     return result;
-}        
+}
 
 pub struct AppleDisk {
     image: String,
@@ -208,11 +208,11 @@ impl AppleDisk {
             println!("  Date:                {}", pdate_to_string(entry.date));
         }
     }
-    
+
     pub fn remove(&self, name: &str) {
         println!("Removing {name} on {0}", self.image);
     }
-    
+
     pub fn transfer(&self, name: &str, to_image: bool, is_text: bool,
         preserve_date: bool) {
         if to_image {
@@ -246,16 +246,16 @@ impl AppleDisk {
             }
         }
     }
-    
+
     pub fn change(&self, from: &str, to: &str) {
         println!("Renaming {from} to {to} on {0}", self.image);
-        
+
     }
-    
+
     pub fn krunch(&self) {
         println!("Consolidating free space on {0}", self.image);
     }
-    
+
     pub fn zero(&self) {
         println!("Clearing directory on {0}", self.image);
     }
@@ -293,5 +293,101 @@ impl AppleDisk {
             }
             println!("")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture_path(name: &str) -> String {
+        format!("{}/../tests/AppleDsks/{name}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    #[test]
+    fn empty_disk_directory() {
+        let d = AppleDisk::new(&fixture_path("empty.dsk"));
+        assert_eq!(d.directory.volume.num_files, 0);
+        assert_eq!(pstring_to_string(&d.directory.volume.volume_name), "WORK");
+        assert_eq!(d.directory.volume.num_blocks, 280);
+        assert_eq!(pdate_to_string(d.directory.volume.date), "1984-11-07");
+        assert_eq!(d.num_blocks(), 280);
+    }
+
+    #[test]
+    fn manyfiles_disk_directory() {
+        let d = AppleDisk::new(&fixture_path("manyfiles.dsk"));
+        assert_eq!(d.directory.volume.num_files, 76);
+
+        let entry0 = &d.directory.entries[0];
+        assert_eq!(pstring_to_string(&entry0.name), "DATAFILE01.DATA");
+        assert_eq!(entry0.first_block, 6);
+        assert_eq!(entry0.first_after_block, 9);
+
+        // DATAFILE11 was deleted, so entry 10 is DATAFILE12 -- this checks
+        // parsing doesn't assume contiguous file numbering.
+        let entry10 = &d.directory.entries[10];
+        assert_eq!(pstring_to_string(&entry10.name), "DATAFILE12.DATA");
+        assert_eq!(entry10.first_block, 39);
+
+        let entry75 = &d.directory.entries[75];
+        assert_eq!(pstring_to_string(&entry75.name), "DATAFILE77.DATA");
+        assert_eq!(entry75.first_block, 234);
+        assert_eq!(entry75.first_after_block, 237);
+    }
+
+    #[test]
+    fn blog_disk_directory() {
+        let d = AppleDisk::new(&fixture_path("blog.dsk"));
+        assert_eq!(d.directory.volume.num_files, 8);
+        let expected_names = [
+            "WORK.TEXT", "MAKEFILES.TEXT", "FILESYSTEM.TEXT", "EDITOR.TEXT",
+            "SHORT.TEXT", "SHORT2.TEXT", "INDENTS.TEXT", "INDENT.TEXT",
+        ];
+        for (i, expected_name) in expected_names.iter().enumerate() {
+            let entry = &d.directory.entries[i];
+            assert_eq!(pstring_to_string(&entry.name), *expected_name);
+            assert_eq!(entry.file_type, 3);
+        }
+    }
+
+    #[test]
+    fn blog_disk_text_simple() {
+        let d = AppleDisk::new(&fixture_path("blog.dsk"));
+        // SHORT.TEXT: first_block=148, first_after_block=152
+        let file_buffer = d.read_blocks(148, 4);
+        let text = text_from_blocks(file_buffer);
+        assert_eq!(
+            String::from_utf8(text).unwrap(),
+            "This is about as simple as it gets.\nA couple of lines,\n\nAnd two paragraphs.\n"
+        );
+    }
+
+    #[test]
+    fn blog_disk_text_indented() {
+        let d = AppleDisk::new(&fixture_path("blog.dsk"));
+        // INDENTS.TEXT: first_block=156, first_after_block=160. Exercises the
+        // run-length-encoded indentation (0x10 marker) decode path.
+        let file_buffer = d.read_blocks(156, 4);
+        let text = text_from_blocks(file_buffer);
+        let expected = "This is about as simple as it gets.\n\
+             \u{20}A couple of lines.\n\
+             \u{20}\u{20}Each further indented,\n\
+             \u{20}\u{20}\u{20}Slowly,\n\
+             \u{20}\u{20}\u{20}\u{20}Inexorably,\n\
+             \u{20}\u{20}\u{20}\u{20}\u{20}Approaching the right margin\n\
+             \u{20}\u{20}\u{20}\u{20}\u{20}\u{20}I guess at the limit, we'd hit 'p'\n\
+             \u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}But I don't have the patience...\n\
+             \u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}Eight\n\
+             \u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}Nine\n\
+             \u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}Ten\n\
+             \u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}Eleven\n\
+             \u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}Twelve\n\
+             \u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}Thirteen\n\
+             \u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}Fourteen\n\
+             \u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}Fifteen\n\
+             \u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}Sixteen\n\
+             \u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\u{20}\n";
+        assert_eq!(String::from_utf8(text).unwrap(), expected);
     }
 }
