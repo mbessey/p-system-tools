@@ -3,10 +3,10 @@
 // Pascal Operating System Reference Manual appendices "ARCHITECTURE OF THE
 // P-MACHINE" and "OPERATION OF THE P-MACHINE" for the source format.
 
-pub mod instruction;
 pub mod decode;
+pub mod instruction;
 pub mod procedure_dict;
 
-pub use instruction::{Mnemonic, Operand, csp_name};
 pub use decode::disassemble;
+pub use instruction::{Mnemonic, Operand, csp_name};
 pub use procedure_dict::parse_procedure_dictionary;

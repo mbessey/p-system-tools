@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
-mod segment_dictionary;
 mod commands;
 mod disassembler;
+mod segment_dictionary;
 
 /// A command-file tool for manipulating UCSD pascal object files
 #[derive(Parser)]
@@ -11,8 +11,11 @@ struct MainArgs {
     /// Name of disk image to use
     #[arg(short, long)]
     code_file: String,
+    /// Print extra diagnostic information
+    #[arg(short, long)]
+    verbose: bool,
     #[command(subcommand)]
-    command: Commands
+    command: Commands,
 }
 
 #[derive(Subcommand)]
@@ -21,12 +24,18 @@ enum Commands {
     Disassemble,
 }
 
-fn main() {
-    println!("size of SegmentDictionary is {}", std::mem::size_of::<segment_dictionary::SegmentDictionary>());
+fn main() -> anyhow::Result<()> {
     let args = MainArgs::parse();
+    if args.verbose {
+        println!(
+            "size of SegmentDictionary is {}",
+            std::mem::size_of::<segment_dictionary::SegmentDictionary>()
+        );
+    }
     let file_name = args.code_file;
     match &args.command {
-        Commands::List => commands::list::run(file_name),
-        Commands::Disassemble => commands::disassemble::run(file_name),
+        Commands::List => commands::list::run(file_name)?,
+        Commands::Disassemble => commands::disassemble::run(file_name)?,
     }
+    Ok(())
 }

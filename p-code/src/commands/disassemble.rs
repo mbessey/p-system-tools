@@ -1,11 +1,11 @@
-use std::fmt::Write as _;
 use crate::disassembler;
 use crate::segment_dictionary::SegmentDictionary;
+use std::fmt::Write as _;
 
-pub fn run(file_name: String) {
+pub fn run(file_name: String) -> anyhow::Result<()> {
     println!("Disassembling code file {file_name}");
-    let contents = std::fs::read(&file_name).expect("Unable to read file");
-    let segment_dictionary = SegmentDictionary::new(&contents);
+    let contents = std::fs::read(&file_name)?;
+    let segment_dictionary = SegmentDictionary::parse(&contents)?;
     for (s, code_info, seg_name) in segment_dictionary.active_segments() {
         let start = code_info.address as usize * 512;
         let end = start + code_info.length as usize;
@@ -46,6 +46,7 @@ pub fn run(file_name: String) {
         }
         println!();
     }
+    Ok(())
 }
 
 fn print_instructions(code: &[u8], base_offset: usize, stop_after: Option<usize>) {
@@ -63,7 +64,9 @@ fn print_instructions(code: &[u8], base_offset: usize, stop_after: Option<usize>
         }
         let extra = match (instr.mnemonic, &instr.operand) {
             (disassembler::Mnemonic::CSP, disassembler::Operand::U8(sub)) => {
-                disassembler::csp_name(*sub).map(|n| format!("  {{{n}}}")).unwrap_or_default()
+                disassembler::csp_name(*sub)
+                    .map(|n| format!("  {{{n}}}"))
+                    .unwrap_or_default()
             }
             _ => String::new(),
         };
@@ -93,7 +96,12 @@ fn format_operand(operand: &disassembler::Operand) -> String {
         Operand::TypeCompare(t, Some(b)) => format!("{t},{b}"),
         Operand::StringData(bytes) => format!("{:?}", String::from_utf8_lossy(bytes)),
         Operand::WordData(bytes) => format!("{} words", bytes.len() / 2),
-        Operand::CaseJump { low, high, default, offsets } => {
+        Operand::CaseJump {
+            low,
+            high,
+            default,
+            offsets,
+        } => {
             format!("{low}..{high} default {default} table {offsets:?}")
         }
     }

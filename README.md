@@ -36,6 +36,8 @@ p-filer --image <IMAGE> <COMMAND>
 
 `--image` / `-i` is the path to the disk image file, required for every command.
 
+`--verbose` / `-v` prints extra diagnostic information (currently: the disk's track/sector layout as it's loaded).
+
 ### Commands
 
 | Command | Description |
@@ -73,6 +75,8 @@ p-code --code-file <CODE_FILE> <COMMAND>
 
 `--code-file` / `-c` is the path to the codefile, required for every command.
 
+`--verbose` / `-v` prints extra diagnostic information (currently: the size of the in-memory segment dictionary layout).
+
 ### Commands
 
 | Command | Description |
@@ -97,7 +101,7 @@ There are also 3 compressed .dsk files (Apple Pascal image format) for testing `
 
 ## Status
 
-This project is under active development. Expect missing features, rough edges, and `unsafe` code reading fixed on-disk binary structures directly into Rust structs.
+This project is under active development. Expect missing features and rough edges (several `p-filer` subcommands are still stubs — see the command tables above).
 
 ## License
 

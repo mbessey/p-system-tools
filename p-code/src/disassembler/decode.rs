@@ -2,9 +2,7 @@ use super::instruction::{Instruction, Mnemonic, Operand};
 
 // Word: next two bytes, low byte first.
 pub(crate) fn read_word(code: &[u8], pos: usize) -> Option<u16> {
-    let lo = *code.get(pos)? as u16;
-    let hi = *code.get(pos + 1)? as u16;
-    Some(lo | (hi << 8))
+    p_system_format::bytes::read_u16_le(code, pos)
 }
 
 // "B" format: one byte if 0..127, else two bytes with bit 7 of the first
@@ -20,50 +18,95 @@ fn read_big(code: &[u8], pos: usize) -> Option<(u16, usize)> {
 }
 
 fn embedded(offset: usize, mnemonic: Mnemonic, value: u8) -> Instruction {
-    Instruction { offset, bytes_len: 1, mnemonic, operand: Operand::Embedded(value) }
+    Instruction {
+        offset,
+        bytes_len: 1,
+        mnemonic,
+        operand: Operand::Embedded(value),
+    }
 }
 
 fn none(offset: usize, mnemonic: Mnemonic) -> Option<Instruction> {
-    Some(Instruction { offset, bytes_len: 1, mnemonic, operand: Operand::None })
+    Some(Instruction {
+        offset,
+        bytes_len: 1,
+        mnemonic,
+        operand: Operand::None,
+    })
 }
 
 fn u8_operand(code: &[u8], offset: usize, mnemonic: Mnemonic) -> Option<Instruction> {
     let v = *code.get(offset + 1)?;
-    Some(Instruction { offset, bytes_len: 2, mnemonic, operand: Operand::U8(v) })
+    Some(Instruction {
+        offset,
+        bytes_len: 2,
+        mnemonic,
+        operand: Operand::U8(v),
+    })
 }
 
 fn i8_operand(code: &[u8], offset: usize, mnemonic: Mnemonic) -> Option<Instruction> {
     let v = *code.get(offset + 1)? as i8;
-    Some(Instruction { offset, bytes_len: 2, mnemonic, operand: Operand::I8(v) })
+    Some(Instruction {
+        offset,
+        bytes_len: 2,
+        mnemonic,
+        operand: Operand::I8(v),
+    })
 }
 
 fn big_operand(code: &[u8], offset: usize, mnemonic: Mnemonic) -> Option<Instruction> {
     let (v, len) = read_big(code, offset + 1)?;
-    Some(Instruction { offset, bytes_len: 1 + len, mnemonic, operand: Operand::Big(v) })
+    Some(Instruction {
+        offset,
+        bytes_len: 1 + len,
+        mnemonic,
+        operand: Operand::Big(v),
+    })
 }
 
 fn word_operand(code: &[u8], offset: usize, mnemonic: Mnemonic) -> Option<Instruction> {
     let v = read_word(code, offset + 1)?;
-    Some(Instruction { offset, bytes_len: 3, mnemonic, operand: Operand::Word(v) })
+    Some(Instruction {
+        offset,
+        bytes_len: 3,
+        mnemonic,
+        operand: Operand::Word(v),
+    })
 }
 
 fn u8_big(code: &[u8], offset: usize, mnemonic: Mnemonic) -> Option<Instruction> {
     let a = *code.get(offset + 1)?;
     let (b, len) = read_big(code, offset + 2)?;
-    Some(Instruction { offset, bytes_len: 2 + len, mnemonic, operand: Operand::U8Big(a, b) })
+    Some(Instruction {
+        offset,
+        bytes_len: 2 + len,
+        mnemonic,
+        operand: Operand::U8Big(a, b),
+    })
 }
 
 fn u8_u8(code: &[u8], offset: usize, mnemonic: Mnemonic) -> Option<Instruction> {
     let a = *code.get(offset + 1)?;
     let b = *code.get(offset + 2)?;
-    Some(Instruction { offset, bytes_len: 3, mnemonic, operand: Operand::U8U8(a, b) })
+    Some(Instruction {
+        offset,
+        bytes_len: 3,
+        mnemonic,
+        operand: Operand::U8U8(a, b),
+    })
 }
 
 fn string_data(code: &[u8], offset: usize, mnemonic: Mnemonic) -> Option<Instruction> {
     let len = *code.get(offset + 1)? as usize;
     let start = offset + 2;
     let chars = code.get(start..start + len)?.to_vec();
-    Some(Instruction { offset, bytes_len: 2 + len, mnemonic, operand: Operand::StringData(chars) })
+    Some(Instruction {
+        offset,
+        bytes_len: 2 + len,
+        mnemonic,
+        operand: Operand::StringData(chars),
+    })
 }
 
 fn word_data(code: &[u8], offset: usize, mnemonic: Mnemonic) -> Option<Instruction> {
@@ -71,7 +114,12 @@ fn word_data(code: &[u8], offset: usize, mnemonic: Mnemonic) -> Option<Instructi
     let byte_len = words * 2;
     let start = offset + 2;
     let block = code.get(start..start + byte_len)?.to_vec();
-    Some(Instruction { offset, bytes_len: 2 + byte_len, mnemonic, operand: Operand::WordData(block) })
+    Some(Instruction {
+        offset,
+        bytes_len: 2 + byte_len,
+        mnemonic,
+        operand: Operand::WordData(block),
+    })
 }
 
 // EQU/GEQ/GRT/LEQ/LES/NEQ: UB selects the compared type; an extra B byte
@@ -120,7 +168,12 @@ fn decode_xjp(code: &[u8], offset: usize) -> Option<Instruction> {
         offset,
         bytes_len: pos - offset,
         mnemonic: Mnemonic::XJP,
-        operand: Operand::CaseJump { low, high, default, offsets },
+        operand: Operand::CaseJump {
+            low,
+            high,
+            default,
+            offsets,
+        },
     })
 }
 
@@ -211,7 +264,12 @@ pub fn decode_one(code: &[u8], offset: usize) -> Option<Instruction> {
         207 => u8_operand(code, offset, CGP),
         208 => string_data(code, offset, LPA),
         209 => u8_big(code, offset, STE),
-        210 => Some(Instruction { offset, bytes_len: 1, mnemonic: UNKNOWN, operand: Operand::None }),
+        210 => Some(Instruction {
+            offset,
+            bytes_len: 1,
+            mnemonic: UNKNOWN,
+            operand: Operand::None,
+        }),
         211 => i8_operand(code, offset, EFJ),
         212 => i8_operand(code, offset, NFJ),
         213 => big_operand(code, offset, BPT),
@@ -241,8 +299,8 @@ pub fn disassemble(code: &[u8]) -> Vec<Instruction> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::instruction::csp_name;
+    use super::*;
 
     #[test]
     fn no_operand_opcode() {
@@ -397,7 +455,12 @@ mod tests {
         assert_eq!(i.mnemonic, Mnemonic::XJP);
         assert_eq!(i.bytes_len, 11);
         match i.operand {
-            Operand::CaseJump { low, high, default, offsets } => {
+            Operand::CaseJump {
+                low,
+                high,
+                default,
+                offsets,
+            } => {
                 assert_eq!(low, 1);
                 assert_eq!(high, 2);
                 assert_eq!(default, -1);

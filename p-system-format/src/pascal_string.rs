@@ -5,11 +5,7 @@
 
 pub fn from_length_prefixed(pstring: &[u8]) -> String {
     let len = pstring[0] as usize;
-    let mut result = String::new();
-    for i in 1..=len {
-        result.push(pstring[i] as char);
-    }
-    result
+    pstring[1..=len].iter().map(|&b| b as char).collect()
 }
 
 pub fn from_space_padded(bytes: &[u8]) -> String {

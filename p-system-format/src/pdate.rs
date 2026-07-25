@@ -38,7 +38,11 @@ pub fn pdate_to_systime(pdate: u16) -> SystemTime {
     // in whatever timezone TZ is set to. This may cause off-by-one-day
     // problems in the timestamp.
 
-    SystemTime::from(Local.with_ymd_and_hms(ydm.year, ydm.month, ydm.day, 0, 0, 0).unwrap())
+    SystemTime::from(
+        Local
+            .with_ymd_and_hms(ydm.year, ydm.month, ydm.day, 0, 0, 0)
+            .unwrap(),
+    )
 }
 
 pub fn pdate_to_string(pdate: u16) -> String {

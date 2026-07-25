@@ -1,2 +1,2 @@
-pub mod list;
 pub mod disassemble;
+pub mod list;

@@ -89,14 +89,17 @@ pub fn parse_procedure_dictionary(segment: &[u8]) -> Option<ProcedureDictionary>
         procedures.push(parse_jtab(segment, jtab_addr)?);
     }
 
-    Some(ProcedureDictionary { segment_number, procedures })
+    Some(ProcedureDictionary {
+        segment_number,
+        procedures,
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::decode::disassemble;
     use super::super::instruction::Mnemonic;
+    use super::*;
 
     #[test]
     fn procedure_dictionary_truncated_input() {
@@ -120,21 +123,28 @@ mod tests {
         let mut seg = vec![0u8; 17];
         seg[0] = 215; // NOP
         seg[1] = 193; // RBP
-        seg[2] = 0;   // RBP's DB param
+        seg[2] = 0; // RBP's DB param
         // DataSize @3-4
-        seg[3] = 10; seg[4] = 0;
+        seg[3] = 10;
+        seg[4] = 0;
         // ParamSize @5-6
-        seg[5] = 0; seg[6] = 0;
+        seg[5] = 0;
+        seg[6] = 0;
         // ExitIC @7-8: word_addr=7, target=1 -> value = 7-1 = 6
-        seg[7] = 6; seg[8] = 0;
+        seg[7] = 6;
+        seg[8] = 0;
         // EnterIC @9-10: word_addr=9, target=0 -> value = 9-0 = 9
-        seg[9] = 9; seg[10] = 0;
+        seg[9] = 9;
+        seg[10] = 0;
         // ProcNum/Lex @11-12: proc=1 (low byte), lex=0 (high byte)
-        seg[11] = 1; seg[12] = 0;
+        seg[11] = 1;
+        seg[12] = 0;
         // entry1 @13-14: word_addr=13, target(jtab)=11 -> value = 13-11 = 2
-        seg[13] = 2; seg[14] = 0;
+        seg[13] = 2;
+        seg[14] = 0;
         // entry0 @15-16: segment=1, count=1
-        seg[15] = 1; seg[16] = 1;
+        seg[15] = 1;
+        seg[16] = 1;
 
         let dict = parse_procedure_dictionary(&seg).unwrap();
         assert_eq!(dict.segment_number, 1);
@@ -165,13 +175,20 @@ mod tests {
         seg[0] = 215;
         seg[1] = 193;
         seg[2] = 0;
-        seg[3] = 10; seg[4] = 0;
-        seg[5] = 0; seg[6] = 0;
-        seg[7] = 6; seg[8] = 0;
-        seg[9] = 4; seg[10] = 0; // corrupted EnterIC: target = 9-4 = 5
-        seg[11] = 1; seg[12] = 0;
-        seg[13] = 2; seg[14] = 0;
-        seg[15] = 1; seg[16] = 1;
+        seg[3] = 10;
+        seg[4] = 0;
+        seg[5] = 0;
+        seg[6] = 0;
+        seg[7] = 6;
+        seg[8] = 0;
+        seg[9] = 4;
+        seg[10] = 0; // corrupted EnterIC: target = 9-4 = 5
+        seg[11] = 1;
+        seg[12] = 0;
+        seg[13] = 2;
+        seg[14] = 0;
+        seg[15] = 1;
+        seg[16] = 1;
 
         assert!(parse_procedure_dictionary(&seg).is_none());
     }
@@ -189,13 +206,20 @@ mod tests {
         seg[0] = 215;
         seg[1] = 193;
         seg[2] = 0;
-        seg[3] = 10; seg[4] = 0;
-        seg[5] = 0; seg[6] = 0;
-        seg[7] = 4; seg[8] = 0; // corrupted ExitIC: target = 7-4 = 3 == code_end
-        seg[9] = 9; seg[10] = 0;
-        seg[11] = 1; seg[12] = 0;
-        seg[13] = 2; seg[14] = 0;
-        seg[15] = 1; seg[16] = 1;
+        seg[3] = 10;
+        seg[4] = 0;
+        seg[5] = 0;
+        seg[6] = 0;
+        seg[7] = 4;
+        seg[8] = 0; // corrupted ExitIC: target = 7-4 = 3 == code_end
+        seg[9] = 9;
+        seg[10] = 0;
+        seg[11] = 1;
+        seg[12] = 0;
+        seg[13] = 2;
+        seg[14] = 0;
+        seg[15] = 1;
+        seg[16] = 1;
 
         assert!(parse_procedure_dictionary(&seg).is_none());
     }
@@ -225,9 +249,9 @@ mod tests {
         // isolation by the synthetic tests above) is caught.
         use Mnemonic::*;
         let expected = [
-            NOP, NOP, LOD, LSA, NOP, SLDC, CXP, CSP, LOD, CXP, CSP, LOD, LAO, SLDC, CXP,
-            CSP, LOD, CXP, CSP, LOD, NOP, LSA, SLDC, CXP, CSP, LOD, LAO, SLDC, CXP, CSP,
-            LOD, CXP, CSP, RBP, SLDC,
+            NOP, NOP, LOD, LSA, NOP, SLDC, CXP, CSP, LOD, CXP, CSP, LOD, LAO, SLDC, CXP, CSP, LOD,
+            CXP, CSP, LOD, NOP, LSA, SLDC, CXP, CSP, LOD, LAO, SLDC, CXP, CSP, LOD, CXP, CSP, RBP,
+            SLDC,
         ];
         let actual: Vec<Mnemonic> = instrs.iter().map(|i| i.mnemonic).collect();
         assert_eq!(actual, expected);
@@ -238,7 +262,10 @@ mod tests {
         // pad byte, which decodes as a harmless extra SLDC(0) -- the
         // documented trailing-byte limitation of code_end, in its mildest
         // form (a lone pad byte rather than a real jump table).
-        let rbp = instrs.iter().find(|i| i.offset == p.exit_ic).expect("RBP at exit_ic");
+        let rbp = instrs
+            .iter()
+            .find(|i| i.offset == p.exit_ic)
+            .expect("RBP at exit_ic");
         assert_eq!(rbp.mnemonic, Mnemonic::RBP);
         assert_eq!(instrs.last().unwrap().mnemonic, Mnemonic::SLDC);
     }

@@ -10,10 +10,8 @@ pub fn text_from_blocks(buffer: &[u8]) -> Vec<u8> {
         if byte == 0x0d {
             result.push(0x0a); // convert CR to LF
         } else if byte == 0x10 {
-            let space_count = buffer[i+1] as usize - 32;
-            for _ in 0..space_count {
-                result.push(0x20); // emit spaces for indent
-            }
+            let space_count = buffer[i + 1] as usize - 32;
+            result.resize(result.len() + space_count, 0x20); // emit spaces for indent
             skip_next = true; // skip the next byte
         } else if byte == 0 {
             continue; // skip null bytes
@@ -36,7 +34,7 @@ mod tests {
 
     #[test]
     fn blog_disk_text_simple() {
-        let disk = AppleDisk::from_file(&fixture_path("blog.dsk"));
+        let disk = AppleDisk::from_file(&fixture_path("blog.dsk"), false).unwrap();
         // SHORT.TEXT: first_block=148, first_after_block=152
         let file_buffer = disk.read_blocks(148, 4);
         let text = text_from_blocks(file_buffer);
@@ -48,7 +46,7 @@ mod tests {
 
     #[test]
     fn blog_disk_text_indented() {
-        let disk = AppleDisk::from_file(&fixture_path("blog.dsk"));
+        let disk = AppleDisk::from_file(&fixture_path("blog.dsk"), false).unwrap();
         // INDENTS.TEXT: first_block=156, first_after_block=160. Exercises the
         // run-length-encoded indentation (0x10 marker) decode path.
         let file_buffer = disk.read_blocks(156, 4);
