@@ -42,7 +42,7 @@ pub struct Instruction {
 
 impl Instruction {
     pub fn raw_bytes<'a>(&self, code: &'a [u8]) -> &'a [u8] {
-        &code[self.offset..self.offset + self.bytes_len]
+        code.get(self.offset..self.offset + self.bytes_len).unwrap_or(&[])
     }
 }
 
@@ -190,9 +190,11 @@ fn decode_xjp(code: &[u8], offset: usize) -> Option<Instruction> {
     })
 }
 
-fn decode_fixed(code: &[u8], offset: usize, opcode: u8) -> Option<Instruction> {
+pub fn decode_one(code: &[u8], offset: usize) -> Option<Instruction> {
     use Mnemonic::*;
+    let opcode = *code.get(offset)?;
     match opcode {
+        0..=127 => Some(embedded(offset, SLDC, opcode)),
         128 => none(offset, ABI),
         129 => none(offset, ABR),
         130 => none(offset, ADI),
@@ -237,6 +239,7 @@ fn decode_fixed(code: &[u8], offset: usize, opcode: u8) -> Option<Instruction> {
         169 => big_operand(code, offset, LDO),
         170 => u8_operand(code, offset, SAS),
         171 => big_operand(code, offset, SRO),
+        172 => decode_xjp(code, offset),
         173 => u8_operand(code, offset, RNP),
         174 => u8_operand(code, offset, CIP),
         175 => type_compare(code, offset, EQU),
@@ -274,26 +277,16 @@ fn decode_fixed(code: &[u8], offset: usize, opcode: u8) -> Option<Instruction> {
         207 => u8_operand(code, offset, CGP),
         208 => string_data(code, offset, LPA),
         209 => u8_big(code, offset, STE),
+        210 => Some(Instruction { offset, bytes_len: 1, mnemonic: UNKNOWN, operand: Operand::None }),
         211 => i8_operand(code, offset, EFJ),
         212 => i8_operand(code, offset, NFJ),
         213 => big_operand(code, offset, BPT),
         214 => none(offset, XIT),
         215 => none(offset, NOP),
-        _ => None, // unreachable given decode_one's dispatch, kept total for safety
-    }
-}
-
-pub fn decode_one(code: &[u8], offset: usize) -> Option<Instruction> {
-    let opcode = *code.get(offset)?;
-    match opcode {
-        0..=127 => Some(embedded(offset, Mnemonic::SLDC, opcode)),
-        172 => decode_xjp(code, offset),
-        210 => Some(Instruction { offset, bytes_len: 1, mnemonic: Mnemonic::UNKNOWN, operand: Operand::None }),
-        216..=231 => Some(embedded(offset, Mnemonic::SLDL, opcode - 215)),
-        232..=247 => Some(embedded(offset, Mnemonic::SLDO, opcode - 231)),
-        248 => Some(embedded(offset, Mnemonic::SIND, 0)),
-        249..=255 => Some(embedded(offset, Mnemonic::SIND, opcode - 248)),
-        128..=215 => decode_fixed(code, offset, opcode),
+        216..=231 => Some(embedded(offset, SLDL, opcode - 215)),
+        232..=247 => Some(embedded(offset, SLDO, opcode - 231)),
+        248 => Some(embedded(offset, SIND, 0)),
+        249..=255 => Some(embedded(offset, SIND, opcode - 248)),
     }
 }
 
@@ -733,11 +726,20 @@ mod tests {
         assert_eq!(p.exit_ic, 0x25f - 0x200);
 
         let instrs = disassemble(&segment[p.enter_ic..p.code_end]);
-        assert!(!instrs.is_empty());
-        assert_eq!(instrs[0].mnemonic, Mnemonic::NOP);
-        assert_eq!(instrs[1].mnemonic, Mnemonic::NOP);
-        assert_eq!(instrs[2].mnemonic, Mnemonic::LOD);
-        assert_eq!(instrs[3].mnemonic, Mnemonic::LSA);
+        // Full expected mnemonic sequence for this procedure's real code,
+        // ground-truthed against the actual decode output rather than
+        // hand-derived, so a regression anywhere in the middle of a real
+        // multi-instruction stream (not just the opcodes covered in
+        // isolation by the synthetic tests above) is caught.
+        use Mnemonic::*;
+        let expected = [
+            NOP, NOP, LOD, LSA, NOP, SLDC, CXP, CSP, LOD, CXP, CSP, LOD, LAO, SLDC, CXP,
+            CSP, LOD, CXP, CSP, LOD, NOP, LSA, SLDC, CXP, CSP, LOD, LAO, SLDC, CXP, CSP,
+            LOD, CXP, CSP, RBP, SLDC,
+        ];
+        let actual: Vec<Mnemonic> = instrs.iter().map(|i| i.mnemonic).collect();
+        assert_eq!(actual, expected);
+
         // ExitIC points at a real RBP instruction, confirming the whole
         // self-relative-pointer scheme end to end. code_end (J-8) lands one
         // byte past RBP's end here, on this segment's single word-alignment

@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::fmt::Write as _;
 mod disassembler;
 
 /// A command-file tool for manipulating UCSD pascal object files
@@ -62,6 +63,16 @@ impl SegmentDictionary {
         let new_self = unsafe {directory_ptr.read_unaligned() };
         return new_self;
     }
+
+    fn active_segments(&self) -> impl Iterator<Item = (usize, CodeInfo, String)> + '_ {
+        (0..16).filter_map(move |s| {
+            let code_info = self.code_info[s];
+            if code_info.address == 0 {
+                return None;
+            }
+            Some((s, code_info, string_from(&self.seg_name[s])))
+        })
+    }
 }
 
 fn main() {
@@ -85,17 +96,12 @@ fn list(file_name: String) {
     };
     println!("Copyright: {}", copyright);
     println!("Segments:");
-    for s in 0..16 {
-        let code_info = segment_dictionary.code_info[s];
-        if code_info.address == 0 {
-            continue;
-        }
-        let seg_name = segment_dictionary.seg_name[s];
+    for (s, code_info, seg_name) in segment_dictionary.active_segments() {
         let seg_kind = segment_dictionary.seg_kind[s];
         let text_addr = segment_dictionary.text_addr[s];
         let seg_info = segment_dictionary.seg_info[s];
 
-        println!("Segment {:#x?}, name: {}, address: {:#x?}, length: {:#x?},", s, string_from(&seg_name), code_info.address*512, code_info.length);
+        println!("Segment {:#x?}, name: {}, address: {:#x?}, length: {:#x?},", s, seg_name, code_info.address*512, code_info.length);
         println!("\t kind: {:?}, text_addr: {:#x?}, seg_info: {:#x?}", seg_kind, text_addr, string_from_segment_info(seg_info));
     }
     println!();
@@ -105,12 +111,7 @@ fn disassemble(file_name: String) {
     println!("Disassembling code file {file_name}");
     let contents = std::fs::read(&file_name).expect("Unable to read file");
     let segment_dictionary = SegmentDictionary::new(&contents);
-    for s in 0..16 {
-        let code_info = segment_dictionary.code_info[s];
-        if code_info.address == 0 {
-            continue;
-        }
-        let seg_name = string_from(&segment_dictionary.seg_name[s]);
+    for (s, code_info, seg_name) in segment_dictionary.active_segments() {
         let start = code_info.address as usize * 512;
         let end = start + code_info.length as usize;
         if end > contents.len() {
@@ -159,7 +160,11 @@ fn print_instructions(code: &[u8], base_offset: usize, stop_after: Option<usize>
         }
     }
     for instr in instrs {
-        let hex: String = instr.raw_bytes(code).iter().map(|b| format!("{b:02x} ")).collect();
+        let raw = instr.raw_bytes(code);
+        let mut hex = String::with_capacity(raw.len() * 3);
+        for b in raw {
+            let _ = write!(hex, "{b:02x} ");
+        }
         let extra = match (instr.mnemonic, &instr.operand) {
             (disassembler::Mnemonic::CSP, disassembler::Operand::U8(sub)) => {
                 disassembler::csp_name(*sub).map(|n| format!("  {{{n}}}")).unwrap_or_default()
@@ -178,21 +183,21 @@ fn print_instructions(code: &[u8], base_offset: usize, stop_after: Option<usize>
 }
 
 fn format_operand(operand: &disassembler::Operand) -> String {
-    use disassembler::Operand::*;
+    use disassembler::Operand;
     match operand {
-        None => String::new(),
-        Embedded(v) => format!("{v}"),
-        U8(v) => format!("{v}"),
-        I8(v) => format!("{v}"),
-        Big(v) => format!("{v}"),
-        U8Big(a, b) => format!("{a},{b}"),
-        U8U8(a, b) => format!("{a},{b}"),
-        Word(v) => format!("{v}"),
-        TypeCompare(t, Option::None) => format!("{t}"),
-        TypeCompare(t, Some(b)) => format!("{t},{b}"),
-        StringData(bytes) => format!("{:?}", String::from_utf8_lossy(bytes)),
-        WordData(bytes) => format!("{} words", bytes.len() / 2),
-        CaseJump { low, high, default, offsets } => {
+        Operand::None => String::new(),
+        Operand::Embedded(v) => format!("{v}"),
+        Operand::U8(v) => format!("{v}"),
+        Operand::I8(v) => format!("{v}"),
+        Operand::Big(v) => format!("{v}"),
+        Operand::U8Big(a, b) => format!("{a},{b}"),
+        Operand::U8U8(a, b) => format!("{a},{b}"),
+        Operand::Word(v) => format!("{v}"),
+        Operand::TypeCompare(t, None) => format!("{t}"),
+        Operand::TypeCompare(t, Some(b)) => format!("{t},{b}"),
+        Operand::StringData(bytes) => format!("{:?}", String::from_utf8_lossy(bytes)),
+        Operand::WordData(bytes) => format!("{} words", bytes.len() / 2),
+        Operand::CaseJump { low, high, default, offsets } => {
             format!("{low}..{high} default {default} table {offsets:?}")
         }
     }
