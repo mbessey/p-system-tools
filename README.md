@@ -78,7 +78,7 @@ p-code --code-file <CODE_FILE> <COMMAND>
 | Command | Description |
 |---|---|
 | `list` | Print the file's copyright string and a table of its segments (name, address, length, kind, and packed segment-info: unit number, code type, version). |
-| `disassemble` | Disassemble the p-code in the file. *(stub — not yet implemented)* |
+| `disassemble` | Disassemble the p-code in the file. |
 
 ### Example
 
@@ -89,6 +89,11 @@ p-code --code-file tests/HelloWorld.code list
 ## Tests
 
 The [`tests`](tests) directory contains sample files (`HelloWorld.pas`, `HelloWorld.code`) useful for exercising `p-code` against a known-good codefile.
+
+There are also 3 compressed .dsk files (Apple Pascal image format) for testing `p-filer`:
+`empty.dsk` - a disk with no contents
+`manyfiles.dsk` - a disk with 75 files on it
+`blog.dsk` - a disk with several blog post text files on it
 
 ## Status
 
