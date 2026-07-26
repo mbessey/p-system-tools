@@ -44,7 +44,7 @@ p-filer --image <IMAGE> <COMMAND>
 |---|---|
 | `list` | Print volume info (name, size, date) and every directory entry (name, type, block range, size, date). |
 | `remove <name>` | Delete a file from the volume. *(stub — not yet implemented)* |
-| `transfer <name> [--to-image] [--text] [-p, --preserve-date]` | Copy a file between the disk image and the host filesystem. By default copies **from** the image to the current directory; pass `--to-image` to copy **to** the image *(that direction is not yet implemented)*. Pass `--text` to convert p-System text file encoding (CR line endings, run-length-encoded indentation) to plain LF text. Pass `--preserve-date`/`-p` to set the extracted file's modification time to the file's date on the volume. |
+| `transfer <name> [--to-image] [--text] [-p, --preserve-date]` | Copy a file between the disk image and the host filesystem. By default copies **from** the image to the current directory; pass `--to-image` to copy a host file **to** the image instead, allocating it into the first large-enough gap in the volume's free space and saving the image back to disk (a `.bak` backup of the previous state is written alongside it). Pass `--text` to convert p-System text file encoding (CR line endings, run-length-encoded indentation) to/from plain LF text. Pass `--preserve-date`/`-p` to sync the modification time between the extracted host file and the file's date on the volume, in whichever direction the copy is going. |
 | `change <from> <to>` | Rename a file on the volume. *(stub — not yet implemented)* |
 | `krunch` | Consolidate free space on the volume. *(stub — not yet implemented)* |
 | `zero` | Clear the volume directory. *(stub — not yet implemented)* |

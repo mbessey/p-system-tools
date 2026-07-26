@@ -1,11 +1,18 @@
 use crate::disk_image::DiskImage;
-use p_system_format::bytes::{read_array, read_u16_le};
+use p_system_format::bytes::{read_array, read_u16_le, write_array, write_u16_le};
 use p_system_format::error::FormatError;
+use p_system_format::pascal_string::from_length_prefixed;
 
 const VOLUME_INFO_SIZE: usize = 26;
 const DIRECTORY_ENTRY_SIZE: usize = 26;
 const NUM_ENTRIES: usize = 77;
 const DIRECTORY_SIZE: usize = VOLUME_INFO_SIZE + NUM_ENTRIES * DIRECTORY_ENTRY_SIZE;
+// The directory occupies a whole number of 512-byte blocks (2, through 5).
+pub(crate) const DIRECTORY_BLOCKS_SIZE: usize = 4 * 512;
+
+// Standard UCSD p-System directory file type codes.
+pub(crate) const FILE_TYPE_TEXTFILE: u16 = 3;
+pub(crate) const FILE_TYPE_DATAFILE: u16 = 5;
 
 // Directory entries are each 26 bytes. The first is a bit special, and contains information about the volume itself.
 // The rest are the files on the volume. Directory entries occupy blocks 2 through 5 on the disk.
@@ -32,6 +39,61 @@ impl Directory {
         });
 
         Ok(Self { volume, entries })
+    }
+
+    pub(crate) fn to_bytes(&self) -> [u8; DIRECTORY_BLOCKS_SIZE] {
+        let mut buf = [0u8; DIRECTORY_BLOCKS_SIZE];
+        buf[0..VOLUME_INFO_SIZE].copy_from_slice(&self.volume.to_bytes());
+        let num_files = self.volume.num_files as usize;
+        for (i, entry) in self.entries.iter().enumerate() {
+            let offset = VOLUME_INFO_SIZE + i * DIRECTORY_ENTRY_SIZE;
+            let entry_bytes = if i < num_files {
+                entry.to_bytes()
+            } else {
+                DirectoryEntry::empty().to_bytes()
+            };
+            buf[offset..offset + DIRECTORY_ENTRY_SIZE].copy_from_slice(&entry_bytes);
+        }
+        buf
+    }
+
+    // Finds the first gap between existing files (or the tail of the volume)
+    // large enough to hold `blocks_needed` contiguous blocks, mirroring how
+    // real p-System allocation works.
+    pub(crate) fn find_free_range(&self, blocks_needed: u16) -> Option<u16> {
+        let num_files = self.volume.num_files as usize;
+        let mut ranges: Vec<(u16, u16)> = self.entries[..num_files]
+            .iter()
+            .map(|e| (e.first_block, e.first_after_block))
+            .collect();
+        ranges.sort_by_key(|r| r.0);
+
+        let mut cursor = self.volume.first_block_after_directory;
+        for (start, end) in ranges {
+            if start > cursor && start - cursor >= blocks_needed {
+                return Some(cursor);
+            }
+            cursor = cursor.max(end);
+        }
+        if self.volume.num_blocks > cursor && self.volume.num_blocks - cursor >= blocks_needed {
+            return Some(cursor);
+        }
+        None
+    }
+
+    pub(crate) fn add_entry(&mut self, entry: DirectoryEntry) -> anyhow::Result<()> {
+        let num_files = self.volume.num_files as usize;
+        anyhow::ensure!(num_files < NUM_ENTRIES, "directory is full");
+        let new_name = from_length_prefixed(&entry.name);
+        for existing in &self.entries[..num_files] {
+            anyhow::ensure!(
+                from_length_prefixed(&existing.name) != new_name,
+                "{new_name} already exists on volume"
+            );
+        }
+        self.entries[num_files] = entry;
+        self.volume.num_files += 1;
+        Ok(())
     }
 }
 
@@ -62,6 +124,20 @@ impl VolumeInfo {
             reserved: read_array::<4>(bytes, 22).expect("size checked above"),
         }
     }
+
+    fn to_bytes(&self) -> [u8; VOLUME_INFO_SIZE] {
+        let mut buf = [0u8; VOLUME_INFO_SIZE];
+        write_u16_le(&mut buf, 0, self.first_system_block).expect("size checked above");
+        write_u16_le(&mut buf, 2, self.first_block_after_directory).expect("size checked above");
+        write_u16_le(&mut buf, 4, self.file_type).expect("size checked above");
+        write_array(&mut buf, 6, &self.volume_name).expect("size checked above");
+        write_u16_le(&mut buf, 14, self.num_blocks).expect("size checked above");
+        write_u16_le(&mut buf, 16, self.num_files).expect("size checked above");
+        write_u16_le(&mut buf, 18, self.last_access_time).expect("size checked above");
+        write_u16_le(&mut buf, 20, self.date).expect("size checked above");
+        write_array(&mut buf, 22, &self.reserved).expect("size checked above");
+        buf
+    }
 }
 
 #[derive(Debug)]
@@ -85,17 +161,104 @@ impl DirectoryEntry {
             date: read_u16_le(bytes, 24).expect("size checked above"),
         }
     }
+
+    pub(crate) fn empty() -> Self {
+        Self {
+            first_block: 0,
+            first_after_block: 0,
+            file_type: 0,
+            name: [0u8; 16],
+            bytes_in_last_block: 0,
+            date: 0,
+        }
+    }
+
+    fn to_bytes(&self) -> [u8; DIRECTORY_ENTRY_SIZE] {
+        let mut buf = [0u8; DIRECTORY_ENTRY_SIZE];
+        write_u16_le(&mut buf, 0, self.first_block).expect("size checked above");
+        write_u16_le(&mut buf, 2, self.first_after_block).expect("size checked above");
+        write_u16_le(&mut buf, 4, self.file_type).expect("size checked above");
+        write_array(&mut buf, 6, &self.name).expect("size checked above");
+        write_u16_le(&mut buf, 22, self.bytes_in_last_block).expect("size checked above");
+        write_u16_le(&mut buf, 24, self.date).expect("size checked above");
+        buf
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::apple_disk::AppleDisk;
-    use p_system_format::pascal_string::from_length_prefixed;
+    use p_system_format::pascal_string::{from_length_prefixed, to_length_prefixed};
     use p_system_format::pdate::pdate_to_string;
 
     fn fixture_path(name: &str) -> String {
         format!("{}/../tests/AppleDsks/{name}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    // Minimal DiskImage wrapping a raw block buffer, for feeding to_bytes()
+    // output straight back into Directory::parse().
+    struct BytesDisk(Vec<u8>);
+    impl DiskImage for BytesDisk {
+        fn read_blocks(&self, _index: usize, _count: usize) -> &[u8] {
+            &self.0
+        }
+        fn num_blocks(&self) -> usize {
+            self.0.len() / 512
+        }
+    }
+
+    fn round_trip_check(fixture: &str) {
+        let disk = AppleDisk::from_file(&fixture_path(fixture), false).unwrap();
+        let directory = Directory::parse(&disk).unwrap();
+        let bytes = directory.to_bytes();
+        let mock = BytesDisk(bytes.to_vec());
+        let round_tripped = Directory::parse(&mock).unwrap();
+
+        assert_eq!(round_tripped.volume.num_files, directory.volume.num_files);
+        assert_eq!(round_tripped.volume.volume_name, directory.volume.volume_name);
+        assert_eq!(round_tripped.volume.num_blocks, directory.volume.num_blocks);
+        assert_eq!(round_tripped.volume.date, directory.volume.date);
+        for i in 0..directory.volume.num_files as usize {
+            let a = &directory.entries[i];
+            let b = &round_tripped.entries[i];
+            assert_eq!(b.first_block, a.first_block);
+            assert_eq!(b.first_after_block, a.first_after_block);
+            assert_eq!(b.file_type, a.file_type);
+            assert_eq!(from_length_prefixed(&b.name), from_length_prefixed(&a.name));
+            assert_eq!(b.bytes_in_last_block, a.bytes_in_last_block);
+            assert_eq!(b.date, a.date);
+        }
+    }
+
+    fn make_directory(num_blocks: u16, entries_data: &[(u16, u16)]) -> Directory {
+        let entries: [DirectoryEntry; NUM_ENTRIES] = std::array::from_fn(|i| {
+            if i < entries_data.len() {
+                let (first_block, first_after_block) = entries_data[i];
+                DirectoryEntry {
+                    first_block,
+                    first_after_block,
+                    file_type: FILE_TYPE_DATAFILE,
+                    name: [0u8; 16],
+                    bytes_in_last_block: 512,
+                    date: 0,
+                }
+            } else {
+                DirectoryEntry::empty()
+            }
+        });
+        let volume = VolumeInfo {
+            first_system_block: 0,
+            first_block_after_directory: 6,
+            file_type: 0,
+            volume_name: [0u8; 8],
+            num_blocks,
+            num_files: entries_data.len() as u16,
+            last_access_time: 0,
+            date: 0,
+            reserved: [0u8; 4],
+        };
+        Directory { volume, entries }
     }
 
     #[test]
@@ -166,5 +329,90 @@ mod tests {
             }
         }
         assert!(Directory::parse(&TinyDisk).is_err());
+    }
+
+    #[test]
+    fn directory_round_trip_empty() {
+        round_trip_check("empty.dsk");
+    }
+
+    #[test]
+    fn directory_round_trip_manyfiles() {
+        round_trip_check("manyfiles.dsk");
+    }
+
+    #[test]
+    fn directory_round_trip_blog() {
+        round_trip_check("blog.dsk");
+    }
+
+    #[test]
+    fn find_free_range_empty_volume() {
+        let directory = make_directory(280, &[]);
+        assert_eq!(directory.find_free_range(10), Some(6));
+    }
+
+    #[test]
+    fn find_free_range_middle_gap() {
+        let directory = make_directory(280, &[(6, 20), (100, 110)]);
+        assert_eq!(directory.find_free_range(50), Some(20));
+        assert_eq!(directory.find_free_range(170), Some(110));
+    }
+
+    #[test]
+    fn find_free_range_no_room() {
+        let directory = make_directory(280, &[(6, 280)]);
+        assert_eq!(directory.find_free_range(1), None);
+    }
+
+    #[test]
+    fn add_entry_rejects_duplicate() {
+        let mut directory = make_directory(280, &[]);
+        let name: [u8; 16] = to_length_prefixed("FOO.TEXT").unwrap();
+        let entry1 = DirectoryEntry {
+            first_block: 6,
+            first_after_block: 8,
+            file_type: FILE_TYPE_TEXTFILE,
+            name,
+            bytes_in_last_block: 512,
+            date: 0,
+        };
+        directory.add_entry(entry1).unwrap();
+        let entry2 = DirectoryEntry {
+            first_block: 8,
+            first_after_block: 10,
+            file_type: FILE_TYPE_TEXTFILE,
+            name,
+            bytes_in_last_block: 512,
+            date: 0,
+        };
+        assert!(directory.add_entry(entry2).is_err());
+    }
+
+    #[test]
+    fn add_entry_rejects_when_full() {
+        let mut directory = make_directory(280, &[]);
+        for i in 0..NUM_ENTRIES {
+            let name: [u8; 16] = to_length_prefixed(&format!("F{i}.TEXT")).unwrap();
+            let entry = DirectoryEntry {
+                first_block: 6,
+                first_after_block: 7,
+                file_type: FILE_TYPE_TEXTFILE,
+                name,
+                bytes_in_last_block: 512,
+                date: 0,
+            };
+            directory.add_entry(entry).unwrap();
+        }
+        let name: [u8; 16] = to_length_prefixed("OVERFLOW.TEXT").unwrap();
+        let entry = DirectoryEntry {
+            first_block: 6,
+            first_after_block: 7,
+            file_type: FILE_TYPE_TEXTFILE,
+            name,
+            bytes_in_last_block: 512,
+            date: 0,
+        };
+        assert!(directory.add_entry(entry).is_err());
     }
 }

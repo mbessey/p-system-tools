@@ -46,7 +46,7 @@ fn main() -> anyhow::Result<()> {
     let args = MainArgs::parse();
     let verbose = args.verbose;
     let image = args.image;
-    let d = Volume::new(AppleDisk::from_file(&image, verbose)?, image)?;
+    let mut d = Volume::new(AppleDisk::from_file(&image, verbose)?, image)?;
     match &args.command {
         Commands::List => d.list()?,
         Commands::Remove { name } => d.remove(name)?,

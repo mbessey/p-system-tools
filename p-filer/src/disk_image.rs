@@ -8,3 +8,12 @@ pub trait DiskImage {
     fn read_blocks(&self, index: usize, count: usize) -> &[u8];
     fn num_blocks(&self) -> usize;
 }
+
+// A DiskImage that can also be mutated and persisted back to its backing
+// store. Kept separate from DiskImage so read-only test mocks don't need to
+// implement writing.
+pub trait WritableDiskImage: DiskImage {
+    // `data.len()` must be a multiple of 512.
+    fn write_blocks(&mut self, index: usize, data: &[u8]);
+    fn save(&self) -> anyhow::Result<()>;
+}

@@ -7,3 +7,6 @@ edition = "2024"
 anyhow = "1"
 clap = { version = "4.5.36", features = ["derive"] }
 p-system-format = { path = "../p-system-format" }
+
+[dev-dependencies]
+tempfile = "3"
