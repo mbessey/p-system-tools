@@ -191,7 +191,8 @@ impl<D: WritableDiskImage> Volume<D> {
             Ok(())
         } else {
             println!("Copying {name} from {0}", self.image_name);
-            for entry in &self.directory.entries {
+            let num_files = self.directory.volume.num_files as usize;
+            for entry in &self.directory.entries[..num_files] {
                 let entry_name = from_length_prefixed(&entry.name);
                 if entry_name == name {
                     println!("Found {name} at block {0}", entry.first_block);
@@ -229,7 +230,7 @@ impl<D: WritableDiskImage> Volume<D> {
                     return Ok(());
                 }
             }
-            Ok(())
+            anyhow::bail!("{name} was not found on {0}", self.image_name)
         }
     }
 
@@ -477,6 +478,22 @@ mod tests {
 
             let mut volume = open_volume(&image_path);
             assert!(volume.transfer("WORK.TEXT", true, true, false).is_err());
+        });
+    }
+
+    #[test]
+    fn transfer_from_image_errors_when_name_not_found() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("empty.dsk"), &image_path).unwrap();
+
+            let mut volume = open_volume(&image_path);
+            // Forgetting --to-image (to_image: false) on an empty volume
+            // used to silently succeed without writing anything.
+            let err = volume
+                .transfer("NOTHERE.TEXT", false, true, false)
+                .unwrap_err();
+            assert!(err.to_string().contains("NOTHERE.TEXT"));
         });
     }
 
