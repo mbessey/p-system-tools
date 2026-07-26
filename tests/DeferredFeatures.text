@@ -1,0 +1,198 @@
+(*$G+*)
+PROGRAM DeferredFeatures;
+
+(* These three procedures (ArrayRecordDemo, TreeDemo+AddName, FileDemo) were
+   removed from Features.text to get the rest of that demo compiling and
+   running while a compiler crash tied to them was still unresolved.
+   They're kept here, isolated in their own compilable program, so whatever
+   issue(s) remain in this trio can be debugged on their own without
+   disturbing the working Features.text.
+
+   Two fixes already known to be necessary (diagnosed and fixed the same
+   way in Features.text) are applied here too: BoolStr is a PROCEDURE with
+   a VAR output parameter, not a FUNCTION returning STRING (UCSD Pascal
+   only allows a function's result type to be scalar, subrange, or
+   pointer -- STRING is a structured type and can't be one); and AddName's
+   NodeName parameter uses the named TreeName type alias rather than an
+   inline PACKED ARRAY (UCSD Pascal requires parameter types to be named,
+   not written out as an inline structured type).
+
+   Neither fix has actually been tried against *this* file yet -- there
+   may be additional, still-undiagnosed issues specific to ArrayRecordDemo
+   or FileDemo (heap operations, typed/untyped file I/O) that also
+   contributed to the original crash. Compile this file on its own to
+   find out. *)
+
+TYPE
+  IntArray = ARRAY [1..5] OF INTEGER;
+  CharBuf = PACKED ARRAY [1..11] OF CHAR;
+  EmployeeKind = (Salaried, Hourly);
+  Person = RECORD
+             Name: STRING[30];
+             Age: INTEGER;
+             CASE Kind: EmployeeKind OF
+               Salaried: (AnnualSalary: REAL);
+               Hourly: (HourlyRate: REAL; HoursWorked: INTEGER)
+           END;
+  NodePtr = ^TreeNode;
+  TreeName = PACKED ARRAY [1..8] OF CHAR; (* named alias -- a bare
+                                             structured type is a
+                                             syntax error in a
+                                             parameter list *)
+  TreeNode = RECORD
+               (* TREESEARCH requires an 8-char name in the first 8
+                  bytes, followed immediately by two node pointers. *)
+               Name: TreeName;
+               Left, Right: NodePtr;
+               Value: INTEGER
+             END;
+
+(* Apple Pascal's WRITE/WRITELN can't print a BOOLEAN value directly,
+   unlike ISO standard Pascal -- convert it ourselves. This has to be a
+   PROCEDURE with a VAR output parameter rather than a FUNCTION: UCSD
+   Pascal only allows a function's result type to be scalar, subrange,
+   or pointer, and STRING is none of those (it's a structured type --
+   a packed array of char with a length byte), so "FUNCTION BoolStr(B:
+   BOOLEAN): STRING" fails to compile with "function result type must
+   be scalar, subrange or pointer". *)
+PROCEDURE BoolStr(B: BOOLEAN; VAR S: STRING);
+BEGIN
+  IF B THEN
+    S := 'TRUE'
+  ELSE
+    S := 'FALSE'
+END;
+
+PROCEDURE ArrayRecordDemo;
+VAR Numbers, NumbersCopy: IntArray;
+    Letters: CharBuf;
+    Emp: Person;
+    HeapMark: ^INTEGER;
+    P: ^INTEGER;
+    K: INTEGER;
+BEGIN
+  FOR K := 1 TO 5 DO Numbers[K] := K * K;
+  WRITE('  Squares: ');
+  FOR K := 1 TO 5 DO WRITE(Numbers[K]:1, ' ');
+  WRITELN;
+
+  NumbersCopy := Numbers;
+  IF Numbers = NumbersCopy THEN
+    WRITELN('  whole-array comparison works (Apple extension)');
+
+  Letters := 'PASCAL DEMO';
+  WRITELN('  packed array of char printed as a string: ', Letters);
+
+  Emp.Name := 'Ada Lovelace';
+  Emp.Age := 36;
+  Emp.Kind := Salaried;
+  Emp.AnnualSalary := 52000.0;
+  WRITELN('  employee: ', Emp.Name, ', age ', Emp.Age:1,
+          ', salary ', Emp.AnnualSalary:10:2);
+
+  MARK(HeapMark);
+  NEW(P);
+  P^ := 42;
+  WRITELN('  heap value = ', P^:1, '  MEMAVAIL = ', MEMAVAIL:1);
+  RELEASE(HeapMark);
+  WRITELN('  after RELEASE, MEMAVAIL = ', MEMAVAIL:1)
+END;
+
+PROCEDURE TreeDemo;
+VAR Root, Found, NewNode: NodePtr;
+    Direction, Result: INTEGER;
+
+  PROCEDURE AddName(NodeName: TreeName; V: INTEGER);
+  VAR Cur: NodePtr;
+  BEGIN
+    NEW(NewNode);
+    NewNode^.Name := NodeName;
+    NewNode^.Left := NIL;
+    NewNode^.Right := NIL;
+    NewNode^.Value := V;
+    IF Root = NIL THEN
+      Root := NewNode
+    ELSE BEGIN
+      Cur := Root;
+      Direction := TREESEARCH(Root, Cur, NodeName);
+      IF Direction = 1 THEN Cur^.Right := NewNode
+      ELSE IF Direction = -1 THEN Cur^.Left := NewNode
+      (* Direction = 0: name already present; NewNode is unused *)
+    END
+  END;
+
+BEGIN
+  Root := NIL;
+  AddName('MMMMMMMM', 3);
+  AddName('AAAAAAAA', 1);
+  AddName('ZZZZZZZZ', 2);
+
+  Found := Root;
+  Result := TREESEARCH(Root, Found, 'AAAAAAAA');
+  IF Result = 0 THEN
+    WRITELN('  TREESEARCH found AAAAAAAA, value = ', Found^.Value:1)
+  ELSE
+    WRITELN('  TREESEARCH: not found')
+END;
+
+PROCEDURE FileDemo;
+VAR F: TEXT;
+    RawOut, RawIn: FILE;
+    Buffer: PACKED ARRAY [0..511] OF CHAR;
+    Line: STRING;
+    Transferred: INTEGER;
+    BoolBuf: STRING;
+BEGIN
+  (* Typed text-file I/O: REWRITE, WRITELN, CLOSE, RESET, EOF, READLN *)
+  REWRITE(F, 'DEMO.TEXT');
+  WRITELN(F, 'Line one from FileDemo');
+  WRITELN(F, 'Line two from FileDemo');
+  CLOSE(F, LOCK);
+
+  RESET(F, 'DEMO.TEXT');
+  WHILE NOT EOF(F) DO BEGIN
+    READLN(F, Line);
+    WRITELN('  read back: ', Line)
+  END;
+  WRITELN('  IORESULT after textfile read = ', IORESULT:1);
+  CLOSE(F, PURGE);
+
+  (* Untyped file I/O: BLOCKREAD/BLOCKWRITE, plus SIZEOF/FILLCHAR *)
+  FILLCHAR(Buffer, SIZEOF(Buffer), 'X');
+  REWRITE(RawOut, 'RAW.DATA');
+  Transferred := BLOCKWRITE(RawOut, Buffer, 1);
+  WRITELN('  BLOCKWRITE transferred ', Transferred:1, ' block(s)');
+  CLOSE(RawOut, LOCK);
+
+  RESET(RawIn, 'RAW.DATA');
+  Transferred := BLOCKREAD(RawIn, Buffer, 1);
+  WRITELN('  BLOCKREAD transferred ', Transferred:1,
+          ' block(s), first byte = ', Buffer[0]);
+  CLOSE(RawIn, PURGE);
+
+  (* Harmless no-ops on the Apple, per the manual *)
+  BoolStr(UNITBUSY(4), BoolBuf);
+  WRITELN('  UNITBUSY(4) = ', BoolBuf);
+  UNITWAIT(4)
+END;
+
+BEGIN
+  WRITELN('=== Deferred Feature Demo (ArrayRecordDemo / TreeDemo / FileDemo) ===');
+  WRITELN;
+
+  WRITELN('-- Arrays, records, heap (NEW/MARK/RELEASE) --');
+  ArrayRecordDemo;
+  WRITELN;
+
+  WRITELN('-- TREESEARCH --');
+  TreeDemo;
+  WRITELN;
+
+  WRITELN('-- Typed/untyped file I/O --');
+  FileDemo;
+  WRITELN;
+
+  WRITELN('=== Demo complete ===');
+
+  EXIT(PROGRAM)
+END.
