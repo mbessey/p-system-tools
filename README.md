@@ -102,6 +102,10 @@ There are also 3 compressed .dsk files (Apple Pascal image format) for testing `
 `manyfiles.dsk` - a disk with 75 files on it
 `blog.dsk` - a disk with several blog post text files on it
 
+## Known issues
+
+- `p-code disassemble` decodes jump instructions (`UJP`/`FJP`/`XJP`) but doesn't compute or print where they actually jump to, and doesn't follow jumps that land past a procedure's `exit_ic` — so code that's only reachable via such a jump (e.g. one-time startup checks a compiler tucks in after the last source-level instruction) won't show up in the printed listing at all. See [`docs/p-code-jumps-and-standard-calls.md`](docs/p-code-jumps-and-standard-calls.md) for the jump-target algorithm, a concrete worked example of this exact gap, and what it'd take to fix (recursive-descent control-flow tracing, not a naive wider print range).
+
 ## Status
 
 This project is under active development. Expect missing features and rough edges (several `p-filer` subcommands are still stubs — see the command tables above).
