@@ -97,14 +97,109 @@ mnemonic. `LoopDemo`'s `REPEAT...UNTIL K > 5` compiles its `UNTIL` test to a
 *conditional, backward* jump (`FJP -16`), which resolves via the exact same
 JTAB path back to the loop body.
 
-One instructive non-match: `main`'s very first instruction is `UJP -10` at
-segment offset `0x0ab2`. Resolving it via JTAB lands at `0x0d70`, which
-falls *between* that procedure's `exit_ic` (`0x0d68`) and `code_end`
-(`0x0d7e`) -- i.e. outside the range `disassemble` actually prints. That's
-compiler-generated boilerplate (very likely a stack/heap-extend check
-inserted at the entry of the outer block), not a source-level jump -- a
-useful reminder that not every jump target lands inside the disassembly you
-can see.
+### Live code can exist past `exit_ic`
+
+`main`'s very first instruction is `UJP -10` at segment offset `0x0ab2`.
+Resolving it via JTAB lands at `0x0d70`, which falls *between* that
+procedure's `exit_ic` (`0x0d68`) and `code_end` (`0x0d7e`) -- outside the
+range `disassemble` actually prints (recall `disassemble.rs`'s comment: it
+deliberately stops printing at `exit_ic`, since `code_end` "can run a
+little past it -- alignment padding, or an undecoded jump table"). That
+first jump landing there isn't a fluke, and it isn't dead space either.
+Decoding those 22 bytes by hand gives:
+
+```
+0d68  SLDC 31                             ; PATH A (falls through from exit_ic -- but
+0d69  CSP 22                              ;   see below, this path is never reached at runtime)
+0d6b  SLDC 30
+0d6c  CSP 22
+0d6e  UJP 8    -> 0d78
+0d70  SLDC 30                             ; PATH B -- this is where main's leading UJP -10 lands
+0d71  CSP 21
+0d73  SLDC 31
+0d74  CSP 21
+0d76  UJP -12  -> 0d6c                    ; rejoins PATH A partway through
+0d78  RBP 0                               ; the procedure's real, mechanical epilogue
+0d7a  LLA 2
+0d7c  SLDC 12
+0d7d  SLDC 0
+```
+
+The values being pushed -- **30 and 31** -- are exactly the two intrinsic
+segment numbers identified in the [CXP table](#cxp----call-externalsegment-procedure)
+below (`LongNum`/`STR` support and formatted-`REAL`-write support,
+respectively). This is program-startup code: a one-time check/link step for
+the intrinsic segments this specific program depends on, run once via the
+backward jump from the procedure's true entry point rather than being
+inlined into every `WRITE`/`STR` call site that needs it.
+
+It sits past `exit_ic` for a structural reason, not an arbitrary one:
+`exit_ic` marks the procedure's last *source-level* instruction, which for
+`main` is the `CSP 4 {EXIT}` call (`EXIT(PROGRAM)`, at `0x0d66`) --
+and on a real p-machine, that call halts the interpreter outright and never
+falls through to whatever bytes follow it. From the compiler's point of
+view, that makes the space right after it "dead" in the normal
+fall-through sense, and thus free real estate to tuck away code that's
+only ever reached via a deliberate jump. Both paths above converge on
+`RBP 0` at `0x0d78` -- the actual low-level "pop this stack frame" epilogue
+every procedure needs, mechanically distinct from the semantic
+"terminate the whole program" that `EXIT(PROGRAM)` performs earlier.
+
+This also explains why [`tests/HelloWorld.code`](../tests/HelloWorld.code)
+has no such prologue: its source (`tests/HelloWorld.pas`) uses only plain
+`STRING`/`WRITELN`/`READLN` -- no `REAL` field-width formatting, no
+extended-precision `LongNum`. It has zero dependency on segments 30 or 31,
+so there's nothing to check or link at startup, and the compiler has no
+reason to generate this prologue at all.
+
+The general lesson: not every jump target lands inside the range
+`disassemble` prints today, and when one doesn't, that's a sign there's
+more *reachable* code past `exit_ic` worth decoding by hand -- not
+necessarily a bug in the tool or the reasoning. See the open question
+below for what it'd take to have the tool discover this automatically.
+
+## Open question: should `disassemble` follow jumps past `exit_ic`?
+
+Not yet implemented -- worth designing before attempting.
+
+Given the `main` example above, an obvious next step is: when a jump target
+resolves past `exit_ic` (but still before `code_end`), print that reachable
+tail too instead of leaving it for someone to decode by hand. The naive
+version of this -- just disassemble everything from `enter_ic` all the way
+to `code_end` unconditionally -- is unsound, and this codebase already knows
+why: `code_end` can include a stretch of pure alignment padding, *or* a raw
+`XJP` case-jump table (word-sized data, not opcodes at all). Decoding those
+bytes as if they were instructions produces plausible-looking garbage with
+no way to tell it's garbage.
+
+The reliable way to know which bytes past `exit_ic` are genuinely "live" is
+the same technique real disassemblers use for this exact problem:
+**recursive-descent control-flow tracing**, not a linear sweep with a fixed
+cutoff. Concretely: starting from `enter_ic`, decode forward; whenever a
+`UJP`/`FJP`/`XJP` is reached, resolve its target(s) using the algorithm
+above, and add each target address to a work-list of "known to be a real
+instruction start" if it hasn't been visited yet (a conditional jump also
+still has its fall-through successor to visit). Keep decoding from every
+address in the work-list until it's empty. Whatever addresses this process
+visits are provably reachable code; anything else in `[exit_ic, code_end)`
+that no traced jump ever points at is unknown -- most likely padding or a
+jump table, but not something to guess-decode.
+
+Short of that kind of flow tracing, there isn't a fully reliable shortcut.
+The only other signal available without it is `code_end` itself as a hard
+*upper bound* (nothing at or past it is ever code, since that's where the
+JTAB/procedure-dictionary metadata begins) -- useful as a safety rail, but
+it doesn't tell you which bytes *within* `[exit_ic, code_end)` are
+instructions versus data. A weaker heuristic (long runs of `0x00` are
+probably alignment padding, since real code essentially never looks like
+that) can help a human skim raw bytes, as this document did by hand above,
+but it's not something to build correctness on.
+
+Implementing this would require exposing `jtab_addr`/`code_end` from
+`procedure_dict.rs` (today only `code_end` is captured internally, and
+`jtab_addr` isn't kept at all) and teaching `disassemble`/`print_instructions`
+to build a reachable-address set via the work-list above instead of
+`disassembler::disassemble`'s current flat linear sweep.
 
 ## CSP -- call standard procedure
 
