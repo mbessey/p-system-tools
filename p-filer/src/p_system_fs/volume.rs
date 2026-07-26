@@ -130,10 +130,11 @@ impl<D: WritableDiskImage> Volume<D> {
         if to_image {
             println!("Copying {name} to {0}", self.image_name);
             let host_bytes = std::fs::read(name)?;
+            let host_len = host_bytes.len();
             let (block_bytes, file_type) = if is_text {
                 (text_to_blocks(&host_bytes)?, FILE_TYPE_TEXTFILE)
             } else {
-                let mut b = host_bytes.clone();
+                let mut b = host_bytes;
                 let padded_len = b.len().div_ceil(512) * 512;
                 b.resize(padded_len, 0);
                 (b, FILE_TYPE_DATAFILE)
@@ -156,10 +157,10 @@ impl<D: WritableDiskImage> Volume<D> {
             };
             let bytes_in_last_block = if is_text {
                 512
-            } else if host_bytes.is_empty() {
+            } else if host_len == 0 {
                 0
             } else {
-                let rem = (host_bytes.len() % 512) as u16;
+                let rem = (host_len % 512) as u16;
                 if rem == 0 { 512 } else { rem }
             };
             self.directory.add_entry(DirectoryEntry {

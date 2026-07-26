@@ -111,31 +111,59 @@ pub struct VolumeInfo {
 }
 
 impl VolumeInfo {
+    // On-disk field offsets, defined once and shared by from_bytes/to_bytes
+    // so the read and write sides can't silently drift out of sync.
+    const OFFSET_FIRST_SYSTEM_BLOCK: usize = 0;
+    const OFFSET_FIRST_BLOCK_AFTER_DIRECTORY: usize = 2;
+    const OFFSET_FILE_TYPE: usize = 4;
+    const OFFSET_VOLUME_NAME: usize = 6;
+    const OFFSET_NUM_BLOCKS: usize = 14;
+    const OFFSET_NUM_FILES: usize = 16;
+    const OFFSET_LAST_ACCESS_TIME: usize = 18;
+    const OFFSET_DATE: usize = 20;
+    const OFFSET_RESERVED: usize = 22;
+
     fn from_bytes(bytes: &[u8]) -> Self {
         Self {
-            first_system_block: read_u16_le(bytes, 0).expect("size checked above"),
-            first_block_after_directory: read_u16_le(bytes, 2).expect("size checked above"),
-            file_type: read_u16_le(bytes, 4).expect("size checked above"),
-            volume_name: read_array::<8>(bytes, 6).expect("size checked above"),
-            num_blocks: read_u16_le(bytes, 14).expect("size checked above"),
-            num_files: read_u16_le(bytes, 16).expect("size checked above"),
-            last_access_time: read_u16_le(bytes, 18).expect("size checked above"),
-            date: read_u16_le(bytes, 20).expect("size checked above"),
-            reserved: read_array::<4>(bytes, 22).expect("size checked above"),
+            first_system_block: read_u16_le(bytes, Self::OFFSET_FIRST_SYSTEM_BLOCK)
+                .expect("size checked above"),
+            first_block_after_directory: read_u16_le(
+                bytes,
+                Self::OFFSET_FIRST_BLOCK_AFTER_DIRECTORY,
+            )
+            .expect("size checked above"),
+            file_type: read_u16_le(bytes, Self::OFFSET_FILE_TYPE).expect("size checked above"),
+            volume_name: read_array::<8>(bytes, Self::OFFSET_VOLUME_NAME)
+                .expect("size checked above"),
+            num_blocks: read_u16_le(bytes, Self::OFFSET_NUM_BLOCKS).expect("size checked above"),
+            num_files: read_u16_le(bytes, Self::OFFSET_NUM_FILES).expect("size checked above"),
+            last_access_time: read_u16_le(bytes, Self::OFFSET_LAST_ACCESS_TIME)
+                .expect("size checked above"),
+            date: read_u16_le(bytes, Self::OFFSET_DATE).expect("size checked above"),
+            reserved: read_array::<4>(bytes, Self::OFFSET_RESERVED).expect("size checked above"),
         }
     }
 
     fn to_bytes(&self) -> [u8; VOLUME_INFO_SIZE] {
         let mut buf = [0u8; VOLUME_INFO_SIZE];
-        write_u16_le(&mut buf, 0, self.first_system_block).expect("size checked above");
-        write_u16_le(&mut buf, 2, self.first_block_after_directory).expect("size checked above");
-        write_u16_le(&mut buf, 4, self.file_type).expect("size checked above");
-        write_array(&mut buf, 6, &self.volume_name).expect("size checked above");
-        write_u16_le(&mut buf, 14, self.num_blocks).expect("size checked above");
-        write_u16_le(&mut buf, 16, self.num_files).expect("size checked above");
-        write_u16_le(&mut buf, 18, self.last_access_time).expect("size checked above");
-        write_u16_le(&mut buf, 20, self.date).expect("size checked above");
-        write_array(&mut buf, 22, &self.reserved).expect("size checked above");
+        write_u16_le(&mut buf, Self::OFFSET_FIRST_SYSTEM_BLOCK, self.first_system_block)
+            .expect("size checked above");
+        write_u16_le(
+            &mut buf,
+            Self::OFFSET_FIRST_BLOCK_AFTER_DIRECTORY,
+            self.first_block_after_directory,
+        )
+        .expect("size checked above");
+        write_u16_le(&mut buf, Self::OFFSET_FILE_TYPE, self.file_type).expect("size checked above");
+        write_array(&mut buf, Self::OFFSET_VOLUME_NAME, &self.volume_name)
+            .expect("size checked above");
+        write_u16_le(&mut buf, Self::OFFSET_NUM_BLOCKS, self.num_blocks)
+            .expect("size checked above");
+        write_u16_le(&mut buf, Self::OFFSET_NUM_FILES, self.num_files).expect("size checked above");
+        write_u16_le(&mut buf, Self::OFFSET_LAST_ACCESS_TIME, self.last_access_time)
+            .expect("size checked above");
+        write_u16_le(&mut buf, Self::OFFSET_DATE, self.date).expect("size checked above");
+        write_array(&mut buf, Self::OFFSET_RESERVED, &self.reserved).expect("size checked above");
         buf
     }
 }
@@ -151,14 +179,25 @@ pub struct DirectoryEntry {
 }
 
 impl DirectoryEntry {
+    // On-disk field offsets, defined once and shared by from_bytes/to_bytes
+    // so the read and write sides can't silently drift out of sync.
+    const OFFSET_FIRST_BLOCK: usize = 0;
+    const OFFSET_FIRST_AFTER_BLOCK: usize = 2;
+    const OFFSET_FILE_TYPE: usize = 4;
+    const OFFSET_NAME: usize = 6;
+    const OFFSET_BYTES_IN_LAST_BLOCK: usize = 22;
+    const OFFSET_DATE: usize = 24;
+
     fn from_bytes(bytes: &[u8]) -> Self {
         Self {
-            first_block: read_u16_le(bytes, 0).expect("size checked above"),
-            first_after_block: read_u16_le(bytes, 2).expect("size checked above"),
-            file_type: read_u16_le(bytes, 4).expect("size checked above"),
-            name: read_array::<16>(bytes, 6).expect("size checked above"),
-            bytes_in_last_block: read_u16_le(bytes, 22).expect("size checked above"),
-            date: read_u16_le(bytes, 24).expect("size checked above"),
+            first_block: read_u16_le(bytes, Self::OFFSET_FIRST_BLOCK).expect("size checked above"),
+            first_after_block: read_u16_le(bytes, Self::OFFSET_FIRST_AFTER_BLOCK)
+                .expect("size checked above"),
+            file_type: read_u16_le(bytes, Self::OFFSET_FILE_TYPE).expect("size checked above"),
+            name: read_array::<16>(bytes, Self::OFFSET_NAME).expect("size checked above"),
+            bytes_in_last_block: read_u16_le(bytes, Self::OFFSET_BYTES_IN_LAST_BLOCK)
+                .expect("size checked above"),
+            date: read_u16_le(bytes, Self::OFFSET_DATE).expect("size checked above"),
         }
     }
 
@@ -175,12 +214,15 @@ impl DirectoryEntry {
 
     fn to_bytes(&self) -> [u8; DIRECTORY_ENTRY_SIZE] {
         let mut buf = [0u8; DIRECTORY_ENTRY_SIZE];
-        write_u16_le(&mut buf, 0, self.first_block).expect("size checked above");
-        write_u16_le(&mut buf, 2, self.first_after_block).expect("size checked above");
-        write_u16_le(&mut buf, 4, self.file_type).expect("size checked above");
-        write_array(&mut buf, 6, &self.name).expect("size checked above");
-        write_u16_le(&mut buf, 22, self.bytes_in_last_block).expect("size checked above");
-        write_u16_le(&mut buf, 24, self.date).expect("size checked above");
+        write_u16_le(&mut buf, Self::OFFSET_FIRST_BLOCK, self.first_block)
+            .expect("size checked above");
+        write_u16_le(&mut buf, Self::OFFSET_FIRST_AFTER_BLOCK, self.first_after_block)
+            .expect("size checked above");
+        write_u16_le(&mut buf, Self::OFFSET_FILE_TYPE, self.file_type).expect("size checked above");
+        write_array(&mut buf, Self::OFFSET_NAME, &self.name).expect("size checked above");
+        write_u16_le(&mut buf, Self::OFFSET_BYTES_IN_LAST_BLOCK, self.bytes_in_last_block)
+            .expect("size checked above");
+        write_u16_le(&mut buf, Self::OFFSET_DATE, self.date).expect("size checked above");
         buf
     }
 }

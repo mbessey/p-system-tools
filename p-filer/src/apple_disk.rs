@@ -15,6 +15,22 @@ fn validate_size(len: usize) -> anyhow::Result<()> {
     Ok(())
 }
 
+// Walks every (logical_offset, physical_offset) 256-byte-sector pair implied
+// by SECTOR_MAP across all tracks in a buffer of the given length. Shared by
+// read_buffer (physical -> logical) and write_buffer (logical -> physical)
+// so the un-shuffle and re-shuffle geometry can't drift out of sync.
+fn for_each_sector(total_len: usize, mut f: impl FnMut(usize, usize)) {
+    let num_tracks = total_len / TRACK_SIZE;
+    for track in 0..num_tracks {
+        let track_offset = track * TRACK_SIZE;
+        for (i, &sector2) in SECTOR_MAP.iter().enumerate() {
+            let logical_offset = track_offset + i * 256;
+            let physical_offset = track_offset + sector2 * 256;
+            f(logical_offset, physical_offset);
+        }
+    }
+}
+
 pub struct AppleDisk {
     blocks: Vec<u8>,
     source_path: String,
@@ -32,26 +48,20 @@ impl AppleDisk {
         let contents: Vec<u8> = std::fs::read(name)?;
         validate_size(contents.len())?;
 
-        let mut buffer = Vec::with_capacity(contents.len());
-        // Apple II .dsk files have interleaved sectors, so un-shuffle them
-        let total_sectors = contents.len() / 256;
-        let num_tracks = total_sectors / 16;
         if verbose {
+            let total_sectors = contents.len() / 256;
             println!(
-                "{num_tracks} tracks of 16 sectors = {total_sectors} sectors, {0} blocks",
+                "{0} tracks of 16 sectors = {total_sectors} sectors, {1} blocks",
+                total_sectors / 16,
                 total_sectors / 2
             );
         }
-        for track in 0..num_tracks {
-            let track_offset = track * 16 * 256;
-            for &sector2 in &SECTOR_MAP {
-                let source_sector_offset = sector2 * 256 + track_offset;
-                for byte in 0..256 {
-                    buffer.push(contents[source_sector_offset + byte]);
-                }
-            }
-        }
-        debug_assert!(contents.len() == buffer.len());
+        // Apple II .dsk files have interleaved sectors, so un-shuffle them.
+        let mut buffer = vec![0u8; contents.len()];
+        for_each_sector(contents.len(), |logical_offset, physical_offset| {
+            buffer[logical_offset..logical_offset + 256]
+                .copy_from_slice(&contents[physical_offset..physical_offset + 256]);
+        });
         Ok(buffer)
     }
 
@@ -59,17 +69,10 @@ impl AppleDisk {
     // blocks back into physical Apple II sector order.
     fn write_buffer(blocks: &[u8]) -> Vec<u8> {
         let mut contents = vec![0u8; blocks.len()];
-        let total_sectors = blocks.len() / 256;
-        let num_tracks = total_sectors / 16;
-        for track in 0..num_tracks {
-            let track_offset = track * 16 * 256;
-            for (i, &sector2) in SECTOR_MAP.iter().enumerate() {
-                let logical_offset = track_offset + i * 256;
-                let physical_offset = track_offset + sector2 * 256;
-                contents[physical_offset..physical_offset + 256]
-                    .copy_from_slice(&blocks[logical_offset..logical_offset + 256]);
-            }
-        }
+        for_each_sector(blocks.len(), |logical_offset, physical_offset| {
+            contents[physical_offset..physical_offset + 256]
+                .copy_from_slice(&blocks[logical_offset..logical_offset + 256]);
+        });
         contents
     }
 }
