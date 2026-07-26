@@ -141,7 +141,8 @@ impl Directory {
             .iter()
             .position(|e| e.first_block > entry.first_block)
             .unwrap_or(num_files);
-        self.entries.copy_within(insert_pos..num_files, insert_pos + 1);
+        self.entries
+            .copy_within(insert_pos..num_files, insert_pos + 1);
         self.entries[insert_pos] = entry;
         self.volume.num_files += 1;
         Ok(())
@@ -197,8 +198,12 @@ impl VolumeInfo {
 
     fn to_bytes(&self) -> [u8; VOLUME_INFO_SIZE] {
         let mut buf = [0u8; VOLUME_INFO_SIZE];
-        write_u16_le(&mut buf, Self::OFFSET_FIRST_SYSTEM_BLOCK, self.first_system_block)
-            .expect("size checked above");
+        write_u16_le(
+            &mut buf,
+            Self::OFFSET_FIRST_SYSTEM_BLOCK,
+            self.first_system_block,
+        )
+        .expect("size checked above");
         write_u16_le(
             &mut buf,
             Self::OFFSET_FIRST_BLOCK_AFTER_DIRECTORY,
@@ -211,8 +216,12 @@ impl VolumeInfo {
         write_u16_le(&mut buf, Self::OFFSET_NUM_BLOCKS, self.num_blocks)
             .expect("size checked above");
         write_u16_le(&mut buf, Self::OFFSET_NUM_FILES, self.num_files).expect("size checked above");
-        write_u16_le(&mut buf, Self::OFFSET_LAST_ACCESS_TIME, self.last_access_time)
-            .expect("size checked above");
+        write_u16_le(
+            &mut buf,
+            Self::OFFSET_LAST_ACCESS_TIME,
+            self.last_access_time,
+        )
+        .expect("size checked above");
         write_u16_le(&mut buf, Self::OFFSET_DATE, self.date).expect("size checked above");
         write_array(&mut buf, Self::OFFSET_RESERVED, &self.reserved).expect("size checked above");
         buf
@@ -221,12 +230,12 @@ impl VolumeInfo {
 
 #[derive(Debug, Clone, Copy)]
 pub struct DirectoryEntry {
-    pub(crate) first_block: u16,         // first block of file
-    pub(crate) first_after_block: u16,   // first block after file (last block + 1)
-    pub(crate) file_type: u16,           // type of file ()
+    pub(crate) first_block: u16,            // first block of file
+    pub(crate) first_after_block: u16,      // first block after file (last block + 1)
+    pub(crate) file_type: u16,              // type of file ()
     pub(crate) name: [u8; ENTRY_NAME_SIZE], // Pascal string - length is first byte
-    pub(crate) bytes_in_last_block: u16, // number of bytes in last block
-    pub(crate) date: u16,                // modified date
+    pub(crate) bytes_in_last_block: u16,    // number of bytes in last block
+    pub(crate) date: u16,                   // modified date
 }
 
 impl DirectoryEntry {
@@ -245,7 +254,8 @@ impl DirectoryEntry {
             first_after_block: read_u16_le(bytes, Self::OFFSET_FIRST_AFTER_BLOCK)
                 .expect("size checked above"),
             file_type: read_u16_le(bytes, Self::OFFSET_FILE_TYPE).expect("size checked above"),
-            name: read_array::<ENTRY_NAME_SIZE>(bytes, Self::OFFSET_NAME).expect("size checked above"),
+            name: read_array::<ENTRY_NAME_SIZE>(bytes, Self::OFFSET_NAME)
+                .expect("size checked above"),
             bytes_in_last_block: read_u16_le(bytes, Self::OFFSET_BYTES_IN_LAST_BLOCK)
                 .expect("size checked above"),
             date: read_u16_le(bytes, Self::OFFSET_DATE).expect("size checked above"),
@@ -274,12 +284,20 @@ impl DirectoryEntry {
         let mut buf = [0u8; DIRECTORY_ENTRY_SIZE];
         write_u16_le(&mut buf, Self::OFFSET_FIRST_BLOCK, self.first_block)
             .expect("size checked above");
-        write_u16_le(&mut buf, Self::OFFSET_FIRST_AFTER_BLOCK, self.first_after_block)
-            .expect("size checked above");
+        write_u16_le(
+            &mut buf,
+            Self::OFFSET_FIRST_AFTER_BLOCK,
+            self.first_after_block,
+        )
+        .expect("size checked above");
         write_u16_le(&mut buf, Self::OFFSET_FILE_TYPE, self.file_type).expect("size checked above");
         write_array(&mut buf, Self::OFFSET_NAME, &self.name).expect("size checked above");
-        write_u16_le(&mut buf, Self::OFFSET_BYTES_IN_LAST_BLOCK, self.bytes_in_last_block)
-            .expect("size checked above");
+        write_u16_le(
+            &mut buf,
+            Self::OFFSET_BYTES_IN_LAST_BLOCK,
+            self.bytes_in_last_block,
+        )
+        .expect("size checked above");
         write_u16_le(&mut buf, Self::OFFSET_DATE, self.date).expect("size checked above");
         buf
     }
@@ -325,7 +343,10 @@ mod tests {
         let round_tripped = Directory::parse(&mock).unwrap();
 
         assert_eq!(round_tripped.volume.num_files, directory.volume.num_files);
-        assert_eq!(round_tripped.volume.volume_name, directory.volume.volume_name);
+        assert_eq!(
+            round_tripped.volume.volume_name,
+            directory.volume.volume_name
+        );
         assert_eq!(round_tripped.volume.num_blocks, directory.volume.num_blocks);
         assert_eq!(round_tripped.volume.date, directory.volume.date);
         for i in 0..directory.volume.num_files as usize {
@@ -590,9 +611,15 @@ mod tests {
         directory.add_entry(entry).unwrap();
 
         assert_eq!(directory.volume.num_files, 3);
-        let blocks: Vec<u16> = directory.entries[..3].iter().map(|e| e.first_block).collect();
+        let blocks: Vec<u16> = directory.entries[..3]
+            .iter()
+            .map(|e| e.first_block)
+            .collect();
         assert_eq!(blocks, vec![6, 50, 100]);
-        assert_eq!(from_length_prefixed(&directory.entries[1].name), "MIDDLE.DATA");
+        assert_eq!(
+            from_length_prefixed(&directory.entries[1].name),
+            "MIDDLE.DATA"
+        );
     }
 
     #[test]
@@ -609,7 +636,10 @@ mod tests {
         };
         directory.add_entry(entry).unwrap();
 
-        let blocks: Vec<u16> = directory.entries[..3].iter().map(|e| e.first_block).collect();
+        let blocks: Vec<u16> = directory.entries[..3]
+            .iter()
+            .map(|e| e.first_block)
+            .collect();
         assert_eq!(blocks, vec![6, 100, 200]);
     }
 

@@ -38,7 +38,13 @@ pub fn run(file_name: String, show_offsets: bool, show_bytes: bool) -> anyhow::R
                     // rather than showing whatever comes after it as if it
                     // were real code.
                     let stop_after = proc.exit_ic.saturating_sub(proc.enter_ic);
-                    print_instructions(code, proc.enter_ic, Some(stop_after), show_offsets, show_bytes);
+                    print_instructions(
+                        code,
+                        proc.enter_ic,
+                        Some(stop_after),
+                        show_offsets,
+                        show_bytes,
+                    );
                 }
             }
             None => {
@@ -59,8 +65,8 @@ fn print_instructions(
     show_bytes: bool,
 ) {
     let mut instrs = disassembler::disassemble(code);
-    let last = stop_after
-        .and_then(|stop_at| instrs.iter().position(|i| stop_at < i.offset + i.bytes_len));
+    let last =
+        stop_after.and_then(|stop_at| instrs.iter().position(|i| stop_at < i.offset + i.bytes_len));
     if let Some(last) = last {
         instrs.truncate(last + 1);
     }

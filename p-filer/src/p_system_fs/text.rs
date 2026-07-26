@@ -71,7 +71,10 @@ pub fn text_from_blocks(buffer: &[u8]) -> Vec<u8> {
             // treat anything else (truncated buffer, or a stray 0x10 that
             // was never actually a marker) as literal content rather than
             // indexing out of bounds or underflowing the subtraction.
-            match buffer.get(i + 1).and_then(|b| (*b as usize).checked_sub(32)) {
+            match buffer
+                .get(i + 1)
+                .and_then(|b| (*b as usize).checked_sub(32))
+            {
                 Some(space_count) => {
                     result.resize(result.len() + space_count, 0x20); // emit spaces for indent
                     skip_next = true; // skip the next byte
@@ -139,7 +142,8 @@ mod tests {
 
     #[test]
     fn text_round_trip_simple() {
-        let text = "This is about as simple as it gets.\nA couple of lines,\n\nAnd two paragraphs.\n";
+        let text =
+            "This is about as simple as it gets.\nA couple of lines,\n\nAnd two paragraphs.\n";
         let blocks = text_to_blocks(text.as_bytes()).unwrap();
         assert_eq!(blocks.len() % 512, 0);
         assert_eq!(String::from_utf8(text_from_blocks(&blocks)).unwrap(), text);

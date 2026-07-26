@@ -4,8 +4,8 @@ use std::fs::File;
 use std::io::prelude::*;
 
 use super::directory::{
-    BLOCK_SIZE, Directory, DirectoryEntry, ENTRY_NAME_SIZE, FILE_TYPE_DATAFILE,
-    FILE_TYPE_TEXTFILE, pad_to_block_boundary,
+    BLOCK_SIZE, Directory, DirectoryEntry, ENTRY_NAME_SIZE, FILE_TYPE_DATAFILE, FILE_TYPE_TEXTFILE,
+    pad_to_block_boundary,
 };
 use super::text::{text_from_blocks, text_to_blocks};
 use crate::disk_image::{DiskImage, WritableDiskImage};
@@ -224,7 +224,8 @@ impl<D: WritableDiskImage> Volume<D> {
                         let trimmed_len = if num_blocks_in_file == 0 {
                             0
                         } else {
-                            (num_blocks_in_file - 1) * BLOCK_SIZE + entry.bytes_in_last_block as usize
+                            (num_blocks_in_file - 1) * BLOCK_SIZE
+                                + entry.bytes_in_last_block as usize
                         }
                         .min(file_buffer.len());
                         let _ = filedesc.write(&file_buffer[..trimmed_len]);
@@ -536,11 +537,7 @@ mod tests {
             std::fs::write("BIGFILE.DATA", &data).unwrap();
 
             let mut volume = open_volume(&image_path);
-            assert!(
-                volume
-                    .transfer("BIGFILE.DATA", true, false, false)
-                    .is_err()
-            );
+            assert!(volume.transfer("BIGFILE.DATA", true, false, false).is_err());
         });
     }
 }
