@@ -9,7 +9,7 @@ const SECTOR_MAP: [usize; 16] = [0, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 
 
 fn validate_size(len: usize) -> anyhow::Result<()> {
     anyhow::ensure!(
-        len != 0 && len % TRACK_SIZE == 0,
+        len != 0 && len.is_multiple_of(TRACK_SIZE),
         "disk image size ({len} bytes) is not a whole number of tracks ({TRACK_SIZE} bytes each)"
     );
     Ok(())

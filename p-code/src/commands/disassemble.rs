@@ -59,10 +59,10 @@ fn print_instructions(
     show_bytes: bool,
 ) {
     let mut instrs = disassembler::disassemble(code);
-    if let Some(stop_at) = stop_after {
-        if let Some(last) = instrs.iter().position(|i| stop_at < i.offset + i.bytes_len) {
-            instrs.truncate(last + 1);
-        }
+    let last = stop_after
+        .and_then(|stop_at| instrs.iter().position(|i| stop_at < i.offset + i.bytes_len));
+    if let Some(last) = last {
+        instrs.truncate(last + 1);
     }
     for instr in instrs {
         let extra = match (instr.mnemonic, &instr.operand) {
