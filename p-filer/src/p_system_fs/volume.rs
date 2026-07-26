@@ -129,6 +129,19 @@ impl<D: WritableDiskImage> Volume<D> {
     ) -> anyhow::Result<()> {
         if to_image {
             println!("Copying {name} to {0}", self.image_name);
+            // `name` may be a full host path (e.g. run from another
+            // directory); only its final component is meaningful as a
+            // p-System volume filename, which is limited to 15 characters.
+            let volume_name = std::path::Path::new(name)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| anyhow::anyhow!("{name} has no valid file name"))?;
+            anyhow::ensure!(
+                volume_name.len() <= 15,
+                "\"{volume_name}\" is {0} characters, but p-System volume filenames \
+                 are limited to 15 characters -- rename the file and try again",
+                volume_name.len()
+            );
             let host_bytes = std::fs::read(name)?;
             let host_len = host_bytes.len();
             let (block_bytes, file_type) = if is_text {
@@ -167,7 +180,7 @@ impl<D: WritableDiskImage> Volume<D> {
                 first_block: start_block,
                 first_after_block: start_block + blocks_needed,
                 file_type,
-                name: to_length_prefixed::<16>(name)?,
+                name: to_length_prefixed::<16>(volume_name)?,
                 bytes_in_last_block,
                 date,
             })?;
@@ -267,6 +280,48 @@ mod tests {
             image_path.to_str().unwrap().to_string(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn transfer_to_image_uses_basename_of_a_full_host_path() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("empty.dsk"), &image_path).unwrap();
+            let sub_dir = dir.join("sub");
+            std::fs::create_dir(&sub_dir).unwrap();
+            let host_path = sub_dir.join("NESTED.TEXT");
+            std::fs::write(&host_path, "from a nested path\n").unwrap();
+
+            let mut volume = open_volume(&image_path);
+            // Pass a full path (not just a bare filename in cwd) -- only its
+            // basename should end up as the volume's directory entry name,
+            // since full paths routinely exceed the 15-character limit.
+            volume
+                .transfer(host_path.to_str().unwrap(), true, true, false)
+                .unwrap();
+
+            let reopened = open_volume(&image_path);
+            let entry = &reopened.directory.entries[0];
+            assert_eq!(from_length_prefixed(&entry.name), "NESTED.TEXT");
+        });
+    }
+
+    #[test]
+    fn transfer_to_image_rejects_filename_over_15_chars_with_clear_message() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("empty.dsk"), &image_path).unwrap();
+            // 16 characters -- one over the p-System limit.
+            std::fs::write("SIXTEEN_CHARS.TX", "hi\n").unwrap();
+
+            let mut volume = open_volume(&image_path);
+            let err = volume
+                .transfer("SIXTEEN_CHARS.TX", true, true, false)
+                .unwrap_err();
+            let message = err.to_string();
+            assert!(message.contains("SIXTEEN_CHARS.TX"));
+            assert!(message.contains("15 characters"));
+        });
     }
 
     #[test]

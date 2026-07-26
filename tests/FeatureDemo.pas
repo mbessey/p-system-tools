@@ -1,0 +1,377 @@
+(*$G+*)
+PROGRAM FeatureDemo;
+
+(* Shallow-but-broad coverage of Apple Pascal / UCSD Pascal language
+   features, in a single source file with no USES clause and no
+   SEGMENT procedures (both deferred deliberately -- see the p-code
+   disassembler project this feeds). Built against the Apple Pascal
+   Language Reference Manual: Chapter 2 (predefined types), Chapter 3
+   (built-in procedures/functions, cross-checked against the
+   authoritative Table 4 list), and Chapter 6 (other differences).
+
+   Deliberately excluded because they require a USES clause:
+     - TRANSCEND unit: SIN, COS, EXP, LN, LOG, ATAN, SQRT
+     - TURTLEGRAPHICS unit: all graphics/turtle/WCHAR/WSTRING/DRAWBLOCK
+     - APPLESTUFF unit: RANDOM, RANDOMIZE, KEYPRESS, PADDLE, BUTTON,
+       TTLOUT, NOTE
+   Deliberately not invoked even though they are true built-ins:
+     - UNITREAD, UNITWRITE, UNITCLEAR (real device/unit numbers --
+       "dangerous procedures" per the manual; UNITBUSY and UNITWAIT
+       are harmless no-ops on the Apple per the manual and are used
+       below).
+     - HALT (deliberately causes a run-time error; EXIT(PROGRAM) is
+       used instead for an orderly stop). *)
+
+TYPE
+  Weekday = (Mon, Tue, Wed, Thu, Fri, Sat, Sun);
+  Digit = 0..9;
+  IntArray = ARRAY [1..5] OF INTEGER;
+  CharBuf = PACKED ARRAY [1..11] OF CHAR;
+  DaySet = SET OF Weekday;
+  DigitSet = SET OF Digit;
+  LongNum = INTEGER[12]; (* named alias -- a bare INTEGER[n] is a
+                            syntax error in a parameter list *)
+  EmployeeKind = (Salaried, Hourly);
+  Person = RECORD
+             Name: STRING[30];
+             Age: INTEGER;
+             CASE Kind: EmployeeKind OF
+               Salaried: (AnnualSalary: REAL);
+               Hourly: (HourlyRate: REAL; HoursWorked: INTEGER)
+           END;
+  NodePtr = ^TreeNode;
+  TreeNode = RECORD
+               (* TREESEARCH requires an 8-char name in the first 8
+                  bytes, followed immediately by two node pointers. *)
+               Name: PACKED ARRAY [1..8] OF CHAR;
+               Left, Right: NodePtr;
+               Value: INTEGER
+             END;
+
+VAR
+  Title: STRING;
+
+FUNCTION Factorial(N: INTEGER): INTEGER;
+BEGIN
+  IF N <= 1 THEN
+    Factorial := 1
+  ELSE
+    Factorial := N * Factorial(N - 1)
+END;
+
+PROCEDURE Outer;
+  VAR LocalVal: INTEGER;
+
+  PROCEDURE Inner;
+  BEGIN
+    WRITELN('  Inside Inner, called from Outer');
+    LocalVal := LocalVal + 1
+  END;
+
+BEGIN
+  LocalVal := 10;
+  Inner;
+  WRITELN('  LocalVal after Inner: ', LocalVal)
+END;
+
+PROCEDURE GotoDemo;
+LABEL 1;
+VAR K: INTEGER;
+BEGIN
+  K := 0;
+  1: K := K + 1;
+  WRITELN('  K = ', K);
+  IF K < 3 THEN GOTO 1;
+  WRITELN('  Done with GOTO demo')
+END;
+
+PROCEDURE CaseDemo(Today: Weekday);
+BEGIN
+  CASE Today OF
+    Mon, Tue, Wed, Thu, Fri: WRITELN('  ', ORD(Today):1, ' is a weekday');
+    Sat, Sun: WRITELN('  ', ORD(Today):1, ' is a weekend day')
+  END;
+  (* Apple Pascal: an unmatched selector just falls through to the
+     next statement, rather than being undefined/an error. Labels
+     0..2 only, so Today values with ord 3..6 fall through silently. *)
+  CASE ORD(Today) OF
+    0: WRITELN('  integer-case: zero');
+    1: WRITELN('  integer-case: one');
+    2: WRITELN('  integer-case: two')
+  END
+END;
+
+PROCEDURE LoopDemo;
+VAR K: INTEGER;
+BEGIN
+  WRITE('  FOR TO: ');
+  FOR K := 1 TO 5 DO WRITE(K:1, ' ');
+  WRITELN;
+
+  WRITE('  FOR DOWNTO: ');
+  FOR K := 5 DOWNTO 1 DO WRITE(K:1, ' ');
+  WRITELN;
+
+  WRITE('  WHILE: ');
+  K := 1;
+  WHILE K <= 5 DO BEGIN
+    WRITE(K:1, ' ');
+    K := K + 1
+  END;
+  WRITELN;
+
+  WRITE('  REPEAT: ');
+  K := 1;
+  REPEAT
+    WRITE(K:1, ' ');
+    K := K + 1
+  UNTIL K > 5;
+  WRITELN
+END;
+
+PROCEDURE MathDemo;
+VAR I: INTEGER;
+    R: REAL;
+    Ch: CHAR;
+    Today: Weekday;
+BEGIN
+  I := -7;
+  WRITELN('  ABS(-7) = ', ABS(I):1);
+  WRITELN('  SQR(6) = ', SQR(6):1);
+  R := 3.7;
+  WRITELN('  ROUND(3.7) = ', ROUND(R):1, '  TRUNC(3.7) = ', TRUNC(R):1);
+  WRITELN('  ODD(7) = ', ODD(7), '  ODD(8) = ', ODD(8));
+  WRITELN('  PWROFTEN(3) = ', PWROFTEN(3):10:2);
+
+  Ch := 'A';
+  WRITELN('  ORD(''A'') = ', ORD(Ch):1, '  CHR(66) = ', CHR(66));
+  WRITELN('  SUCC(''A'') = ', SUCC(Ch), '  PRED(''B'') = ', PRED('B'));
+
+  Today := Wed;
+  WRITELN('  ORD(Wed) = ', ORD(Today):1);
+  Today := SUCC(Today);
+  WRITELN('  ORD(SUCC(Wed)) = ', ORD(Today):1);
+
+  WRITELN('  MAXINT = ', MAXINT:1);
+  WRITELN('  TRUE / FALSE literals: ', TRUE, ' ', FALSE)
+END;
+
+PROCEDURE ShowLong(Value: LongNum);
+VAR S: STRING;
+BEGIN
+  STR(Value, S);
+  WRITELN('  LONG INTEGER via named-type parameter: ', S)
+END;
+
+PROCEDURE StringDemo;
+VAR S, T, U: STRING;
+    LNum: LongNum;
+BEGIN
+  S := 'Hello, World!';
+  WRITELN('  S = ', S, '  LENGTH = ', LENGTH(S):1);
+  WRITELN('  POS(''World'', S) = ', POS('World', S):1);
+  T := COPY(S, 8, 5);
+  WRITELN('  COPY(S,8,5) = ', T);
+  U := CONCAT('Prefix-', S, '-Suffix');
+  WRITELN('  CONCAT = ', U);
+  DELETE(U, 1, 7);
+  WRITELN('  after DELETE = ', U);
+  INSERT('NEW-', U, 1);
+  WRITELN('  after INSERT = ', U);
+
+  LNum := 123456789012; (* exceeds MAXINT -> automatically LONG INTEGER *)
+  STR(LNum, T);
+  WRITELN('  STR(LongInt) = ', T);
+  ShowLong(987654321098);
+
+  IF S = S THEN WRITELN('  string equality works');
+  IF 'ABC' < 'ABD' THEN WRITELN('  string ordering works')
+END;
+
+PROCEDURE SetDemo;
+VAR Weekdays, Weekend, Overlap: DaySet;
+    SmallDigits, BigDigits, CommonDigits: DigitSet;
+BEGIN
+  Weekdays := [Mon, Tue, Wed, Thu, Fri];
+  Weekend := [Sat, Sun];
+  Overlap := Weekdays * Weekend;
+  IF Mon IN Weekdays THEN WRITELN('  Mon is a weekday');
+  IF NOT (Sat IN Weekdays) THEN WRITELN('  Sat is not a weekday');
+  IF Overlap = [] THEN WRITELN('  weekdays and weekend do not overlap');
+
+  SmallDigits := [0, 1, 2, 3, 4];
+  BigDigits := [3, 4, 5, 6, 7, 8, 9];
+  CommonDigits := SmallDigits * BigDigits;
+  IF CommonDigits = [3, 4] THEN WRITELN('  set intersection works')
+END;
+
+PROCEDURE ArrayRecordDemo;
+VAR Numbers, NumbersCopy: IntArray;
+    Letters: CharBuf;
+    Emp: Person;
+    HeapMark: ^INTEGER;
+    P: ^INTEGER;
+    K: INTEGER;
+BEGIN
+  FOR K := 1 TO 5 DO Numbers[K] := K * K;
+  WRITE('  Squares: ');
+  FOR K := 1 TO 5 DO WRITE(Numbers[K]:1, ' ');
+  WRITELN;
+
+  NumbersCopy := Numbers;
+  IF Numbers = NumbersCopy THEN
+    WRITELN('  whole-array comparison works (Apple extension)');
+
+  Letters := 'PASCAL DEMO';
+  WRITELN('  packed array of char printed as a string: ', Letters);
+
+  Emp.Name := 'Ada Lovelace';
+  Emp.Age := 36;
+  Emp.Kind := Salaried;
+  Emp.AnnualSalary := 52000.0;
+  WRITELN('  employee: ', Emp.Name, ', age ', Emp.Age:1,
+          ', salary ', Emp.AnnualSalary:10:2);
+
+  MARK(HeapMark);
+  NEW(P);
+  P^ := 42;
+  WRITELN('  heap value = ', P^:1, '  MEMAVAIL = ', MEMAVAIL:1);
+  RELEASE(HeapMark);
+  WRITELN('  after RELEASE, MEMAVAIL = ', MEMAVAIL:1)
+END;
+
+PROCEDURE TreeDemo;
+VAR Root, Found, NewNode: NodePtr;
+    Direction, Result: INTEGER;
+
+  PROCEDURE AddName(NodeName: PACKED ARRAY [1..8] OF CHAR; V: INTEGER);
+  VAR Cur: NodePtr;
+  BEGIN
+    NEW(NewNode);
+    NewNode^.Name := NodeName;
+    NewNode^.Left := NIL;
+    NewNode^.Right := NIL;
+    NewNode^.Value := V;
+    IF Root = NIL THEN
+      Root := NewNode
+    ELSE BEGIN
+      Cur := Root;
+      Direction := TREESEARCH(Root, Cur, NodeName);
+      IF Direction = 1 THEN Cur^.Right := NewNode
+      ELSE IF Direction = -1 THEN Cur^.Left := NewNode
+      (* Direction = 0: name already present; NewNode is unused *)
+    END
+  END;
+
+BEGIN
+  Root := NIL;
+  AddName('MMMMMMMM', 3);
+  AddName('AAAAAAAA', 1);
+  AddName('ZZZZZZZZ', 2);
+
+  Found := Root;
+  Result := TREESEARCH(Root, Found, 'AAAAAAAA');
+  IF Result = 0 THEN
+    WRITELN('  TREESEARCH found AAAAAAAA, value = ', Found^.Value:1)
+  ELSE
+    WRITELN('  TREESEARCH: not found')
+END;
+
+PROCEDURE FileDemo;
+VAR F: TEXT;
+    RawOut, RawIn: FILE;
+    Buffer: PACKED ARRAY [0..511] OF CHAR;
+    Line: STRING;
+    Transferred: INTEGER;
+BEGIN
+  (* Typed text-file I/O: REWRITE, WRITELN, CLOSE, RESET, EOF, READLN *)
+  REWRITE(F, 'DEMO.TEXT');
+  WRITELN(F, 'Line one from FileDemo');
+  WRITELN(F, 'Line two from FileDemo');
+  CLOSE(F, LOCK);
+
+  RESET(F, 'DEMO.TEXT');
+  WHILE NOT EOF(F) DO BEGIN
+    READLN(F, Line);
+    WRITELN('  read back: ', Line)
+  END;
+  WRITELN('  IORESULT after textfile read = ', IORESULT:1);
+  CLOSE(F, PURGE);
+
+  (* Untyped file I/O: BLOCKREAD/BLOCKWRITE, plus SIZEOF/FILLCHAR *)
+  FILLCHAR(Buffer, SIZEOF(Buffer), 'X');
+  REWRITE(RawOut, 'RAW.DATA');
+  Transferred := BLOCKWRITE(RawOut, Buffer, 1);
+  WRITELN('  BLOCKWRITE transferred ', Transferred:1, ' block(s)');
+  CLOSE(RawOut, LOCK);
+
+  RESET(RawIn, 'RAW.DATA');
+  Transferred := BLOCKREAD(RawIn, Buffer, 1);
+  WRITELN('  BLOCKREAD transferred ', Transferred:1,
+          ' block(s), first byte = ', Buffer[0]);
+  CLOSE(RawIn, PURGE);
+
+  (* Harmless no-ops on the Apple, per the manual *)
+  WRITELN('  UNITBUSY(4) = ', UNITBUSY(4));
+  UNITWAIT(4)
+END;
+
+BEGIN
+  WRITELN('=== Apple Pascal Feature Demo ===');
+  WRITELN;
+
+  WRITE('Enter your name: ');
+  READLN(Title);
+  WRITELN('Hello, ', Title, '!');
+  WRITELN;
+
+  WRITELN('-- Loops (FOR/WHILE/REPEAT) --');
+  LoopDemo;
+  WRITELN;
+
+  WRITELN('-- GOTO/LABEL --');
+  GotoDemo;
+  WRITELN;
+
+  WRITELN('-- CASE --');
+  CaseDemo(Wed);
+  CaseDemo(Sat);
+  WRITELN;
+
+  WRITELN('-- Nested procedures (lex level > 0) --');
+  Outer;
+  WRITELN;
+
+  WRITELN('-- Recursion --');
+  WRITELN('  Factorial(6) = ', Factorial(6):1);
+  WRITELN;
+
+  WRITELN('-- Arithmetic/ordinal built-ins --');
+  MathDemo;
+  WRITELN;
+
+  WRITELN('-- Strings and LONG INTEGER --');
+  StringDemo;
+  WRITELN;
+
+  WRITELN('-- Sets --');
+  SetDemo;
+  WRITELN;
+
+  WRITELN('-- Arrays, records, heap (NEW/MARK/RELEASE) --');
+  ArrayRecordDemo;
+  WRITELN;
+
+  WRITELN('-- TREESEARCH --');
+  TreeDemo;
+  WRITELN;
+
+  WRITELN('-- Typed/untyped file I/O --');
+  FileDemo;
+  WRITELN;
+
+  GOTOXY(0, 0);
+  WRITELN('=== Demo complete ===');
+
+  EXIT(PROGRAM)
+END.
