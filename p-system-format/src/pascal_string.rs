@@ -22,7 +22,7 @@ pub fn from_space_padded(bytes: &[u8]) -> String {
 }
 
 pub fn to_length_prefixed<const N: usize>(s: &str) -> Result<[u8; N], FormatError> {
-    if s.len() > N - 1 || s.len() > 255 {
+    if N == 0 || s.len() > N - 1 || s.len() > 255 {
         return Err(FormatError::InvalidValue {
             field: "length_prefixed string",
             value: s.len() as u32,
@@ -55,5 +55,12 @@ mod tests {
         let buf = to_length_prefixed::<4>("ABC").unwrap();
         assert_eq!(from_length_prefixed(&buf), "ABC");
         assert!(to_length_prefixed::<4>("ABCD").is_err());
+    }
+
+    #[test]
+    fn to_length_prefixed_rejects_n_zero_instead_of_underflowing() {
+        // N=0 can't even hold a length byte; must error, not underflow N-1.
+        assert!(to_length_prefixed::<0>("").is_err());
+        assert!(to_length_prefixed::<0>("x").is_err());
     }
 }

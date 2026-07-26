@@ -2,7 +2,7 @@ use crate::disassembler;
 use crate::segment_dictionary::SegmentDictionary;
 use std::fmt::Write as _;
 
-pub fn run(file_name: String, show_bytes: bool) -> anyhow::Result<()> {
+pub fn run(file_name: String, show_offsets: bool, show_bytes: bool) -> anyhow::Result<()> {
     println!("Disassembling code file {file_name}");
     let contents = std::fs::read(&file_name)?;
     let segment_dictionary = SegmentDictionary::parse(&contents)?;
@@ -19,7 +19,7 @@ pub fn run(file_name: String, show_bytes: bool) -> anyhow::Result<()> {
         let segment_bytes = &contents[start..end];
 
         println!("Segment {s} ({seg_name}):");
-        if show_bytes {
+        if show_offsets {
             println!("  (offset within segment; segment starts at file offset {start:#x})");
         }
         match disassembler::parse_procedure_dictionary(segment_bytes) {
@@ -38,12 +38,12 @@ pub fn run(file_name: String, show_bytes: bool) -> anyhow::Result<()> {
                     // rather than showing whatever comes after it as if it
                     // were real code.
                     let stop_after = proc.exit_ic.saturating_sub(proc.enter_ic);
-                    print_instructions(code, proc.enter_ic, Some(stop_after), show_bytes);
+                    print_instructions(code, proc.enter_ic, Some(stop_after), show_offsets, show_bytes);
                 }
             }
             None => {
                 println!("  (couldn't parse procedure dictionary; showing raw decode)");
-                print_instructions(segment_bytes, 0, None, show_bytes);
+                print_instructions(segment_bytes, 0, None, show_offsets, show_bytes);
             }
         }
         println!();
@@ -55,6 +55,7 @@ fn print_instructions(
     code: &[u8],
     base_offset: usize,
     stop_after: Option<usize>,
+    show_offsets: bool,
     show_bytes: bool,
 ) {
     let mut instrs = disassembler::disassemble(code);
@@ -72,28 +73,27 @@ fn print_instructions(
             }
             _ => String::new(),
         };
+        // Each optional column is independent, so any combination of
+        // show_offsets/show_bytes composes without duplicating the
+        // mnemonic/operand suffix that's common to every case.
+        let mut prefix = String::new();
+        if show_offsets {
+            let _ = write!(prefix, "{:04x}  ", base_offset + instr.offset);
+        }
         if show_bytes {
             let raw = instr.raw_bytes(code);
             let mut hex = String::with_capacity(raw.len() * 3);
             for b in raw {
                 let _ = write!(hex, "{b:02x} ");
             }
-            println!(
-                "    {:04x}  {:<18} {:?}  {}{}",
-                base_offset + instr.offset,
-                hex,
-                instr.mnemonic,
-                format_operand(instr.mnemonic, &instr.operand),
-                extra
-            );
-        } else {
-            println!(
-                "{:?}  {}{}",
-                instr.mnemonic,
-                format_operand(instr.mnemonic, &instr.operand),
-                extra
-            );
+            let _ = write!(prefix, "{hex:<18} ");
         }
+        println!(
+            "{prefix}{:?}  {}{}",
+            instr.mnemonic,
+            format_operand(instr.mnemonic, &instr.operand),
+            extra
+        );
     }
 }
 

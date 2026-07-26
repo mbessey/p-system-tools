@@ -57,6 +57,11 @@ impl AppleDisk {
             );
         }
         // Apple II .dsk files have interleaved sectors, so un-shuffle them.
+        // The zero-fill below is fully overwritten by for_each_sector on any
+        // validly-sized image (it covers every byte exactly once); it's kept
+        // anyway as a defined fallback value rather than reaching for unsafe
+        // uninitialized-buffer construction to skip a memset that's already
+        // negligible at these disk-image sizes (a few hundred KB at most).
         let mut buffer = vec![0u8; contents.len()];
         for_each_sector(contents.len(), |logical_offset, physical_offset| {
             buffer[logical_offset..logical_offset + 256]
@@ -66,7 +71,8 @@ impl AppleDisk {
     }
 
     // Exact inverse of read_buffer's un-shuffle: re-interleaves de-interleaved
-    // blocks back into physical Apple II sector order.
+    // blocks back into physical Apple II sector order. See read_buffer's
+    // comment on the zero-fill below being redundant-but-intentional.
     fn write_buffer(blocks: &[u8]) -> Vec<u8> {
         let mut contents = vec![0u8; blocks.len()];
         for_each_sector(blocks.len(), |logical_offset, physical_offset| {

@@ -51,8 +51,7 @@ pub fn text_to_blocks(text: &[u8]) -> anyhow::Result<Vec<u8>> {
         }
         i += 1;
     }
-    let padded_len = result.len().div_ceil(512) * 512;
-    result.resize(padded_len, 0);
+    super::directory::pad_to_block_boundary(&mut result);
     Ok(result)
 }
 

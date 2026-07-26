@@ -3,7 +3,10 @@ use p_system_format::pdate::{now_to_pdate, pdate_to_string, pdate_to_systime, sy
 use std::fs::File;
 use std::io::prelude::*;
 
-use super::directory::{Directory, DirectoryEntry, FILE_TYPE_DATAFILE, FILE_TYPE_TEXTFILE};
+use super::directory::{
+    BLOCK_SIZE, Directory, DirectoryEntry, ENTRY_NAME_SIZE, FILE_TYPE_DATAFILE,
+    FILE_TYPE_TEXTFILE, pad_to_block_boundary,
+};
 use super::text::{text_from_blocks, text_to_blocks};
 use crate::disk_image::{DiskImage, WritableDiskImage};
 
@@ -141,10 +144,11 @@ impl<D: WritableDiskImage> Volume<D> {
                 .ok_or_else(|| anyhow::anyhow!("{name} has no valid file name"))?
                 .to_ascii_uppercase();
             anyhow::ensure!(
-                volume_name.len() <= 15,
+                volume_name.len() < ENTRY_NAME_SIZE,
                 "\"{volume_name}\" is {0} characters, but p-System volume filenames \
-                 are limited to 15 characters -- rename the file and try again",
-                volume_name.len()
+                 are limited to {1} characters -- rename the file and try again",
+                volume_name.len(),
+                ENTRY_NAME_SIZE - 1
             );
             let host_bytes = std::fs::read(name)?;
             let host_len = host_bytes.len();
@@ -152,11 +156,10 @@ impl<D: WritableDiskImage> Volume<D> {
                 (text_to_blocks(&host_bytes)?, FILE_TYPE_TEXTFILE)
             } else {
                 let mut b = host_bytes;
-                let padded_len = b.len().div_ceil(512) * 512;
-                b.resize(padded_len, 0);
+                pad_to_block_boundary(&mut b);
                 (b, FILE_TYPE_DATAFILE)
             };
-            let blocks_needed_total = block_bytes.len() / 512;
+            let blocks_needed_total = block_bytes.len() / BLOCK_SIZE;
             anyhow::ensure!(
                 blocks_needed_total <= self.directory.volume.num_blocks as usize,
                 "{name} needs {blocks_needed_total} blocks, but the volume only has {0} blocks total",
@@ -173,18 +176,18 @@ impl<D: WritableDiskImage> Volume<D> {
                 now_to_pdate()?
             };
             let bytes_in_last_block = if is_text {
-                512
+                BLOCK_SIZE as u16
             } else if host_len == 0 {
                 0
             } else {
-                let rem = (host_len % 512) as u16;
-                if rem == 0 { 512 } else { rem }
+                let rem = (host_len % BLOCK_SIZE) as u16;
+                if rem == 0 { BLOCK_SIZE as u16 } else { rem }
             };
             self.directory.add_entry(DirectoryEntry {
                 first_block: start_block,
                 first_after_block: start_block + blocks_needed,
                 file_type,
-                name: to_length_prefixed::<16>(&volume_name)?,
+                name: to_length_prefixed::<ENTRY_NAME_SIZE>(&volume_name)?,
                 bytes_in_last_block,
                 date,
             })?;
@@ -200,10 +203,10 @@ impl<D: WritableDiskImage> Volume<D> {
                 let entry_name = from_length_prefixed(&entry.name);
                 if entry_name == name {
                     println!("Found {name} at block {0}", entry.first_block);
-                    let file_buffer = self.disk.read_blocks(
-                        entry.first_block as usize,
-                        entry.first_after_block as usize - entry.first_block as usize,
-                    );
+                    let num_blocks_in_file = entry.block_count();
+                    let file_buffer = self
+                        .disk
+                        .read_blocks(entry.first_block as usize, num_blocks_in_file);
                     let file_name = name.to_string();
                     // Because we want to possibly use set_times, we'll
                     // have to use more conventional File:: methods.
@@ -214,14 +217,14 @@ impl<D: WritableDiskImage> Volume<D> {
                     } else {
                         // Only the last block is partially used; trim to the
                         // real content length instead of writing the whole
-                        // block-aligned buffer (with .min() as a defensive
-                        // guard against a corrupt/implausible metadata value).
-                        let num_blocks_in_file = (entry.first_after_block
-                            - entry.first_block) as usize;
+                        // block-aligned buffer. .min() is a defensive guard
+                        // against an implausible bytes_in_last_block value;
+                        // num_blocks_in_file itself can't underflow since it
+                        // was already saturated above.
                         let trimmed_len = if num_blocks_in_file == 0 {
                             0
                         } else {
-                            (num_blocks_in_file - 1) * 512 + entry.bytes_in_last_block as usize
+                            (num_blocks_in_file - 1) * BLOCK_SIZE + entry.bytes_in_last_block as usize
                         }
                         .min(file_buffer.len());
                         let _ = filedesc.write(&file_buffer[..trimmed_len]);

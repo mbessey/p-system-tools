@@ -7,12 +7,25 @@ const VOLUME_INFO_SIZE: usize = 26;
 const DIRECTORY_ENTRY_SIZE: usize = 26;
 const NUM_ENTRIES: usize = 77;
 const DIRECTORY_SIZE: usize = VOLUME_INFO_SIZE + NUM_ENTRIES * DIRECTORY_ENTRY_SIZE;
+pub(crate) const BLOCK_SIZE: usize = 512;
 // The directory occupies a whole number of 512-byte blocks (2, through 5).
-pub(crate) const DIRECTORY_BLOCKS_SIZE: usize = 4 * 512;
+pub(crate) const DIRECTORY_BLOCKS_SIZE: usize = 4 * BLOCK_SIZE;
+// Size of DirectoryEntry's length-prefixed name field (so 15 characters,
+// since byte 0 is the length). The single source of truth for both the
+// field's own size and any length check performed before encoding a name.
+pub(crate) const ENTRY_NAME_SIZE: usize = 16;
 
 // Standard UCSD p-System directory file type codes.
 pub(crate) const FILE_TYPE_TEXTFILE: u16 = 3;
 pub(crate) const FILE_TYPE_DATAFILE: u16 = 5;
+
+// Rounds `buf` up to a whole number of BLOCK_SIZE-byte blocks, zero-padding
+// the tail. Shared by the text and raw-data to-image encoding paths so the
+// padding convention can't drift between them.
+pub(crate) fn pad_to_block_boundary(buf: &mut Vec<u8>) {
+    let padded_len = buf.len().div_ceil(BLOCK_SIZE) * BLOCK_SIZE;
+    buf.resize(padded_len, 0);
+}
 
 // Directory entries are each 26 bytes. The first is a bit special, and contains information about the volume itself.
 // The rest are the files on the volume. Directory entries occupy blocks 2 through 5 on the disk.
@@ -33,6 +46,21 @@ impl Directory {
         }
 
         let volume = VolumeInfo::from_bytes(bytes);
+        // Both fields are trusted everywhere else in this crate to slice
+        // fixed-size arrays or bound block allocation, so validate them
+        // once here rather than letting a corrupted image panic later.
+        if volume.num_files as usize > NUM_ENTRIES {
+            return Err(FormatError::InvalidValue {
+                field: "num_files",
+                value: volume.num_files as u32,
+            });
+        }
+        if volume.num_blocks as usize > disk.num_blocks() {
+            return Err(FormatError::InvalidValue {
+                field: "num_blocks",
+                value: volume.num_blocks as u32,
+            });
+        }
         let entries = std::array::from_fn(|i| {
             let offset = VOLUME_INFO_SIZE + i * DIRECTORY_ENTRY_SIZE;
             DirectoryEntry::from_bytes(&bytes[offset..offset + DIRECTORY_ENTRY_SIZE])
@@ -60,25 +88,37 @@ impl Directory {
     // Finds the first gap between existing files (or the tail of the volume)
     // large enough to hold `blocks_needed` contiguous blocks, mirroring how
     // real p-System allocation works.
-    pub(crate) fn find_free_range(&self, blocks_needed: u16) -> Option<u16> {
+    // Enumerates every free (start, end) block range between existing files
+    // (and the tail up to num_blocks), in ascending order. Shared building
+    // block for both allocation (find_free_range) and, eventually,
+    // consolidation (krunch, which needs every gap, not just the first).
+    pub(crate) fn free_ranges(&self) -> Vec<(u16, u16)> {
         let num_files = self.volume.num_files as usize;
-        let mut ranges: Vec<(u16, u16)> = self.entries[..num_files]
+        let mut occupied: Vec<(u16, u16)> = self.entries[..num_files]
             .iter()
             .map(|e| (e.first_block, e.first_after_block))
             .collect();
-        ranges.sort_by_key(|r| r.0);
+        occupied.sort_by_key(|r| r.0);
 
+        let mut free = Vec::new();
         let mut cursor = self.volume.first_block_after_directory;
-        for (start, end) in ranges {
-            if start > cursor && start - cursor >= blocks_needed {
-                return Some(cursor);
+        for (start, end) in occupied {
+            if start > cursor {
+                free.push((cursor, start));
             }
             cursor = cursor.max(end);
         }
-        if self.volume.num_blocks > cursor && self.volume.num_blocks - cursor >= blocks_needed {
-            return Some(cursor);
+        if self.volume.num_blocks > cursor {
+            free.push((cursor, self.volume.num_blocks));
         }
-        None
+        free
+    }
+
+    pub(crate) fn find_free_range(&self, blocks_needed: u16) -> Option<u16> {
+        self.free_ranges()
+            .into_iter()
+            .find(|(start, end)| end - start >= blocks_needed)
+            .map(|(start, _)| start)
     }
 
     pub(crate) fn add_entry(&mut self, entry: DirectoryEntry) -> anyhow::Result<()> {
@@ -184,7 +224,7 @@ pub struct DirectoryEntry {
     pub(crate) first_block: u16,         // first block of file
     pub(crate) first_after_block: u16,   // first block after file (last block + 1)
     pub(crate) file_type: u16,           // type of file ()
-    pub(crate) name: [u8; 16],           // Pascal string - length is first byte
+    pub(crate) name: [u8; ENTRY_NAME_SIZE], // Pascal string - length is first byte
     pub(crate) bytes_in_last_block: u16, // number of bytes in last block
     pub(crate) date: u16,                // modified date
 }
@@ -205,7 +245,7 @@ impl DirectoryEntry {
             first_after_block: read_u16_le(bytes, Self::OFFSET_FIRST_AFTER_BLOCK)
                 .expect("size checked above"),
             file_type: read_u16_le(bytes, Self::OFFSET_FILE_TYPE).expect("size checked above"),
-            name: read_array::<16>(bytes, Self::OFFSET_NAME).expect("size checked above"),
+            name: read_array::<ENTRY_NAME_SIZE>(bytes, Self::OFFSET_NAME).expect("size checked above"),
             bytes_in_last_block: read_u16_le(bytes, Self::OFFSET_BYTES_IN_LAST_BLOCK)
                 .expect("size checked above"),
             date: read_u16_le(bytes, Self::OFFSET_DATE).expect("size checked above"),
@@ -217,10 +257,17 @@ impl DirectoryEntry {
             first_block: 0,
             first_after_block: 0,
             file_type: 0,
-            name: [0u8; 16],
+            name: [0u8; ENTRY_NAME_SIZE],
             bytes_in_last_block: 0,
             date: 0,
         }
+    }
+
+    // Number of blocks the file occupies. Saturating: a corrupted or
+    // adversarial entry could have first_after_block < first_block, which
+    // this treats as zero blocks rather than underflowing.
+    pub(crate) fn block_count(&self) -> usize {
+        self.first_after_block.saturating_sub(self.first_block) as usize
     }
 
     fn to_bytes(self) -> [u8; DIRECTORY_ENTRY_SIZE] {
@@ -250,14 +297,20 @@ mod tests {
     }
 
     // Minimal DiskImage wrapping a raw block buffer, for feeding to_bytes()
-    // output straight back into Directory::parse().
-    struct BytesDisk(Vec<u8>);
+    // output straight back into Directory::parse(). num_blocks is reported
+    // separately rather than derived from the buffer's own length, since
+    // that buffer only ever holds the directory's 4 blocks regardless of
+    // the volume's real (much larger) size.
+    struct BytesDisk {
+        directory_bytes: Vec<u8>,
+        num_blocks: usize,
+    }
     impl DiskImage for BytesDisk {
         fn read_blocks(&self, _index: usize, _count: usize) -> &[u8] {
-            &self.0
+            &self.directory_bytes
         }
         fn num_blocks(&self) -> usize {
-            self.0.len() / 512
+            self.num_blocks
         }
     }
 
@@ -265,7 +318,10 @@ mod tests {
         let disk = AppleDisk::from_file(&fixture_path(fixture), false).unwrap();
         let directory = Directory::parse(&disk).unwrap();
         let bytes = directory.to_bytes();
-        let mock = BytesDisk(bytes.to_vec());
+        let mock = BytesDisk {
+            directory_bytes: bytes.to_vec(),
+            num_blocks: directory.volume.num_blocks as usize,
+        };
         let round_tripped = Directory::parse(&mock).unwrap();
 
         assert_eq!(round_tripped.volume.num_files, directory.volume.num_files);
@@ -292,7 +348,7 @@ mod tests {
                     first_block,
                     first_after_block,
                     file_type: FILE_TYPE_DATAFILE,
-                    name: [0u8; 16],
+                    name: [0u8; ENTRY_NAME_SIZE],
                     bytes_in_last_block: 512,
                     date: 0,
                 }
@@ -385,6 +441,35 @@ mod tests {
     }
 
     #[test]
+    fn parse_rejects_num_files_exceeding_num_entries() {
+        // A corrupted num_files claiming more files than the fixed 77-entry
+        // array can hold must be rejected here, not left to panic later when
+        // something slices entries[..num_files].
+        let entries_data = vec![(6u16, 7u16); 200];
+        let directory = make_directory(280, &entries_data);
+        let bytes = directory.to_bytes().to_vec();
+        let mock = BytesDisk {
+            directory_bytes: bytes,
+            num_blocks: 280,
+        };
+        assert!(Directory::parse(&mock).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_num_blocks_exceeding_physical_disk_size() {
+        // A corrupted/truncated image whose on-disk num_blocks claims a
+        // larger volume than the disk actually is must be rejected here,
+        // not left to let allocation pick an out-of-bounds start_block.
+        let directory = make_directory(280, &[]);
+        let bytes = directory.to_bytes().to_vec();
+        let mock = BytesDisk {
+            directory_bytes: bytes,
+            num_blocks: 4, // far smaller than the volume's claimed 280 blocks
+        };
+        assert!(Directory::parse(&mock).is_err());
+    }
+
+    #[test]
     fn directory_round_trip_empty() {
         round_trip_check("empty.dsk");
     }
@@ -419,9 +504,30 @@ mod tests {
     }
 
     #[test]
+    fn free_ranges_enumerates_every_gap() {
+        // Mirrors find_free_range_middle_gap's layout, but checks that every
+        // gap is reported, not just the first one big enough for a given
+        // request -- the building block a future krunch will need.
+        let directory = make_directory(280, &[(6, 20), (100, 110)]);
+        assert_eq!(directory.free_ranges(), vec![(20, 100), (110, 280)]);
+    }
+
+    #[test]
+    fn free_ranges_empty_volume_is_one_big_gap() {
+        let directory = make_directory(280, &[]);
+        assert_eq!(directory.free_ranges(), vec![(6, 280)]);
+    }
+
+    #[test]
+    fn free_ranges_no_room_is_empty() {
+        let directory = make_directory(280, &[(6, 280)]);
+        assert_eq!(directory.free_ranges(), vec![]);
+    }
+
+    #[test]
     fn add_entry_rejects_duplicate() {
         let mut directory = make_directory(280, &[]);
-        let name: [u8; 16] = to_length_prefixed("FOO.TEXT").unwrap();
+        let name: [u8; ENTRY_NAME_SIZE] = to_length_prefixed("FOO.TEXT").unwrap();
         let entry1 = DirectoryEntry {
             first_block: 6,
             first_after_block: 8,
@@ -446,7 +552,7 @@ mod tests {
     fn add_entry_rejects_when_full() {
         let mut directory = make_directory(280, &[]);
         for i in 0..NUM_ENTRIES {
-            let name: [u8; 16] = to_length_prefixed(&format!("F{i}.TEXT")).unwrap();
+            let name: [u8; ENTRY_NAME_SIZE] = to_length_prefixed(&format!("F{i}.TEXT")).unwrap();
             let entry = DirectoryEntry {
                 first_block: 6,
                 first_after_block: 7,
@@ -457,7 +563,7 @@ mod tests {
             };
             directory.add_entry(entry).unwrap();
         }
-        let name: [u8; 16] = to_length_prefixed("OVERFLOW.TEXT").unwrap();
+        let name: [u8; ENTRY_NAME_SIZE] = to_length_prefixed("OVERFLOW.TEXT").unwrap();
         let entry = DirectoryEntry {
             first_block: 6,
             first_after_block: 7,
@@ -472,7 +578,7 @@ mod tests {
     #[test]
     fn add_entry_inserts_in_first_block_order() {
         let mut directory = make_directory(280, &[(6, 20), (100, 110)]);
-        let name: [u8; 16] = to_length_prefixed("MIDDLE.DATA").unwrap();
+        let name: [u8; ENTRY_NAME_SIZE] = to_length_prefixed("MIDDLE.DATA").unwrap();
         let entry = DirectoryEntry {
             first_block: 50,
             first_after_block: 60,
@@ -492,7 +598,7 @@ mod tests {
     #[test]
     fn add_entry_appends_when_it_belongs_at_the_tail() {
         let mut directory = make_directory(280, &[(6, 20), (100, 110)]);
-        let name: [u8; 16] = to_length_prefixed("LAST.DATA").unwrap();
+        let name: [u8; ENTRY_NAME_SIZE] = to_length_prefixed("LAST.DATA").unwrap();
         let entry = DirectoryEntry {
             first_block: 200,
             first_after_block: 210,
@@ -505,5 +611,31 @@ mod tests {
 
         let blocks: Vec<u16> = directory.entries[..3].iter().map(|e| e.first_block).collect();
         assert_eq!(blocks, vec![6, 100, 200]);
+    }
+
+    #[test]
+    fn block_count_is_normal_difference_for_a_well_formed_entry() {
+        let entry = DirectoryEntry {
+            first_block: 10,
+            first_after_block: 13,
+            file_type: FILE_TYPE_DATAFILE,
+            name: [0u8; ENTRY_NAME_SIZE],
+            bytes_in_last_block: 512,
+            date: 0,
+        };
+        assert_eq!(entry.block_count(), 3);
+    }
+
+    #[test]
+    fn block_count_saturates_instead_of_underflowing_on_a_corrupt_entry() {
+        let entry = DirectoryEntry {
+            first_block: 13,
+            first_after_block: 10, // corrupt: before first_block
+            file_type: FILE_TYPE_DATAFILE,
+            name: [0u8; ENTRY_NAME_SIZE],
+            bytes_in_last_block: 512,
+            date: 0,
+        };
+        assert_eq!(entry.block_count(), 0);
     }
 }
