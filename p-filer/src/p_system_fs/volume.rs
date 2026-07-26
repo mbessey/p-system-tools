@@ -132,10 +132,14 @@ impl<D: WritableDiskImage> Volume<D> {
             // `name` may be a full host path (e.g. run from another
             // directory); only its final component is meaningful as a
             // p-System volume filename, which is limited to 15 characters.
+            // Uppercase it: the Filer can display a lowercase name, but the
+            // Editor and other system tools don't handle them well, so
+            // volume filenames are conventionally all-uppercase.
             let volume_name = std::path::Path::new(name)
                 .file_name()
                 .and_then(|n| n.to_str())
-                .ok_or_else(|| anyhow::anyhow!("{name} has no valid file name"))?;
+                .ok_or_else(|| anyhow::anyhow!("{name} has no valid file name"))?
+                .to_ascii_uppercase();
             anyhow::ensure!(
                 volume_name.len() <= 15,
                 "\"{volume_name}\" is {0} characters, but p-System volume filenames \
@@ -180,7 +184,7 @@ impl<D: WritableDiskImage> Volume<D> {
                 first_block: start_block,
                 first_after_block: start_block + blocks_needed,
                 file_type,
-                name: to_length_prefixed::<16>(volume_name)?,
+                name: to_length_prefixed::<16>(&volume_name)?,
                 bytes_in_last_block,
                 date,
             })?;
@@ -315,6 +319,27 @@ mod tests {
             let reopened = open_volume(&image_path);
             let entry = &reopened.directory.entries[0];
             assert_eq!(from_length_prefixed(&entry.name), "NESTED.TEXT");
+        });
+    }
+
+    #[test]
+    fn transfer_to_image_uppercases_the_volume_name() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("empty.dsk"), &image_path).unwrap();
+            std::fs::write("FeatureDemo.pas", "lowercase host filename\n").unwrap();
+
+            let mut volume = open_volume(&image_path);
+            // The Filer can display a lowercase name, but the Editor and
+            // other system tools don't handle them well -- volume names
+            // should always be uppercased regardless of host file casing.
+            volume
+                .transfer("FeatureDemo.pas", true, true, false)
+                .unwrap();
+
+            let reopened = open_volume(&image_path);
+            let entry = &reopened.directory.entries[0];
+            assert_eq!(from_length_prefixed(&entry.name), "FEATUREDEMO.PAS");
         });
     }
 
