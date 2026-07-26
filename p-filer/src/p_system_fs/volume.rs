@@ -138,7 +138,13 @@ impl<D: WritableDiskImage> Volume<D> {
                 b.resize(padded_len, 0);
                 (b, FILE_TYPE_DATAFILE)
             };
-            let blocks_needed = (block_bytes.len() / 512) as u16;
+            let blocks_needed_total = block_bytes.len() / 512;
+            anyhow::ensure!(
+                blocks_needed_total <= self.directory.volume.num_blocks as usize,
+                "{name} needs {blocks_needed_total} blocks, but the volume only has {0} blocks total",
+                self.directory.volume.num_blocks
+            );
+            let blocks_needed = blocks_needed_total as u16;
             let start_block = self
                 .directory
                 .find_free_range(blocks_needed)
@@ -150,6 +156,8 @@ impl<D: WritableDiskImage> Volume<D> {
             };
             let bytes_in_last_block = if is_text {
                 512
+            } else if host_bytes.is_empty() {
+                0
             } else {
                 let rem = (host_bytes.len() % 512) as u16;
                 if rem == 0 { 512 } else { rem }
@@ -185,7 +193,19 @@ impl<D: WritableDiskImage> Volume<D> {
                         let text_buffer = text_from_blocks(file_buffer);
                         let _ = filedesc.write(text_buffer.as_slice());
                     } else {
-                        let _ = filedesc.write(file_buffer);
+                        // Only the last block is partially used; trim to the
+                        // real content length instead of writing the whole
+                        // block-aligned buffer (with .min() as a defensive
+                        // guard against a corrupt/implausible metadata value).
+                        let num_blocks_in_file = (entry.first_after_block
+                            - entry.first_block) as usize;
+                        let trimmed_len = if num_blocks_in_file == 0 {
+                            0
+                        } else {
+                            (num_blocks_in_file - 1) * 512 + entry.bytes_in_last_block as usize
+                        }
+                        .min(file_buffer.len());
+                        let _ = filedesc.write(&file_buffer[..trimmed_len]);
                     }
                     println!("Wrote {name} to disk");
                     if preserve_date {
@@ -276,8 +296,6 @@ mod tests {
         in_temp_dir(|dir| {
             let image_path = dir.join("scratch.dsk");
             std::fs::copy(fixture_path("empty.dsk"), &image_path).unwrap();
-            // Exactly 2 blocks so from-image's whole-block read (it doesn't
-            // trim to bytes_in_last_block) reproduces the input exactly.
             let data: Vec<u8> = (0..1024u32).map(|b| (b % 256) as u8).collect();
             std::fs::write("DATA.DATA", &data).unwrap();
 
@@ -293,6 +311,65 @@ mod tests {
             reopened.transfer("DATA.DATA", false, false, false).unwrap();
             let round_tripped = std::fs::read("DATA.DATA").unwrap();
             assert_eq!(round_tripped, data);
+        });
+    }
+
+    #[test]
+    fn transfer_to_image_binary_round_trip_non_block_aligned() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("empty.dsk"), &image_path).unwrap();
+            // Deliberately not a multiple of 512, to exercise from-image
+            // trimming to entry.bytes_in_last_block on extraction.
+            let data: Vec<u8> = (0..700u32).map(|b| (b % 256) as u8).collect();
+            std::fs::write("ODD.DATA", &data).unwrap();
+
+            let mut volume = open_volume(&image_path);
+            volume.transfer("ODD.DATA", true, false, false).unwrap();
+
+            let mut reopened = open_volume(&image_path);
+            let entry = &reopened.directory.entries[0];
+            assert_eq!(entry.bytes_in_last_block, 700 % 512);
+
+            std::fs::remove_file("ODD.DATA").unwrap();
+            reopened.transfer("ODD.DATA", false, false, false).unwrap();
+            let round_tripped = std::fs::read("ODD.DATA").unwrap();
+            assert_eq!(round_tripped, data);
+        });
+    }
+
+    #[test]
+    fn transfer_to_image_empty_file_has_consistent_metadata() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("empty.dsk"), &image_path).unwrap();
+            std::fs::write("EMPTY.DATA", b"").unwrap();
+
+            let mut volume = open_volume(&image_path);
+            volume.transfer("EMPTY.DATA", true, false, false).unwrap();
+
+            let reopened = open_volume(&image_path);
+            let entry = &reopened.directory.entries[0];
+            assert_eq!(entry.first_block, entry.first_after_block);
+            assert_eq!(entry.bytes_in_last_block, 0);
+        });
+    }
+
+    #[test]
+    fn transfer_to_image_errors_cleanly_when_file_exceeds_volume_capacity() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("empty.dsk"), &image_path).unwrap();
+            // empty.dsk has 280 blocks (143360 bytes) total; this file needs
+            // more blocks than the entire volume has, exercising the guard
+            // that rejects oversized input before it could ever truncate a
+            // block count through a u16 cast.
+            let data = vec![0u8; 512 * 300];
+            std::fs::write("HUGE.DATA", &data).unwrap();
+
+            let mut volume = open_volume(&image_path);
+            let err = volume.transfer("HUGE.DATA", true, false, false);
+            assert!(err.is_err());
         });
     }
 
