@@ -40,10 +40,14 @@ TYPE
                Hourly: (HourlyRate: REAL; HoursWorked: INTEGER)
            END;
   NodePtr = ^TreeNode;
+  TreeName = PACKED ARRAY [1..8] OF CHAR; (* named alias -- a bare
+                                             structured type is a
+                                             syntax error in a
+                                             parameter list *)
   TreeNode = RECORD
                (* TREESEARCH requires an 8-char name in the first 8
                   bytes, followed immediately by two node pointers. *)
-               Name: PACKED ARRAY [1..8] OF CHAR;
+               Name: TreeName;
                Left, Right: NodePtr;
                Value: INTEGER
              END;
@@ -57,6 +61,16 @@ BEGIN
     Factorial := 1
   ELSE
     Factorial := N * Factorial(N - 1)
+END;
+
+(* Apple Pascal's WRITE/WRITELN can't print a BOOLEAN value directly,
+   unlike ISO standard Pascal -- convert it ourselves. *)
+FUNCTION BoolStr(B: BOOLEAN): STRING;
+BEGIN
+  IF B THEN
+    BoolStr := 'TRUE'
+  ELSE
+    BoolStr := 'FALSE'
 END;
 
 PROCEDURE Outer;
@@ -140,7 +154,7 @@ BEGIN
   WRITELN('  SQR(6) = ', SQR(6):1);
   R := 3.7;
   WRITELN('  ROUND(3.7) = ', ROUND(R):1, '  TRUNC(3.7) = ', TRUNC(R):1);
-  WRITELN('  ODD(7) = ', ODD(7), '  ODD(8) = ', ODD(8));
+  WRITELN('  ODD(7) = ', BoolStr(ODD(7)), '  ODD(8) = ', BoolStr(ODD(8)));
   WRITELN('  PWROFTEN(3) = ', PWROFTEN(3):10:2);
 
   Ch := 'A';
@@ -153,7 +167,7 @@ BEGIN
   WRITELN('  ORD(SUCC(Wed)) = ', ORD(Today):1);
 
   WRITELN('  MAXINT = ', MAXINT:1);
-  WRITELN('  TRUE / FALSE literals: ', TRUE, ' ', FALSE)
+  WRITELN('  TRUE / FALSE literals: ', BoolStr(TRUE), ' ', BoolStr(FALSE))
 END;
 
 PROCEDURE ShowLong(Value: LongNum);
@@ -244,7 +258,7 @@ PROCEDURE TreeDemo;
 VAR Root, Found, NewNode: NodePtr;
     Direction, Result: INTEGER;
 
-  PROCEDURE AddName(NodeName: PACKED ARRAY [1..8] OF CHAR; V: INTEGER);
+  PROCEDURE AddName(NodeName: TreeName; V: INTEGER);
   VAR Cur: NodePtr;
   BEGIN
     NEW(NewNode);
@@ -312,7 +326,7 @@ BEGIN
   CLOSE(RawIn, PURGE);
 
   (* Harmless no-ops on the Apple, per the manual *)
-  WRITELN('  UNITBUSY(4) = ', UNITBUSY(4));
+  WRITELN('  UNITBUSY(4) = ', BoolStr(UNITBUSY(4)));
   UNITWAIT(4)
 END;
 
