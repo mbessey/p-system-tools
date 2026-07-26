@@ -44,7 +44,7 @@ p-filer --image <IMAGE> <COMMAND>
 |---|---|
 | `list` | Print volume info (name, size, date) and every directory entry (name, type, block range, size, date). |
 | `remove <name>` | Delete a file from the volume. *(stub — not yet implemented)* |
-| `transfer <name> [--to-image] [--text] [-p, --preserve-date]` | Copy a file between the disk image and the host filesystem. By default copies **from** the image to the current directory; pass `--to-image` to copy a host file **to** the image instead, allocating it into the first large-enough gap in the volume's free space and saving the image back to disk (a `.bak` backup of the previous state is written alongside it). Pass `--text` to convert p-System text file encoding (CR line endings, run-length-encoded indentation) to/from plain LF text. Pass `--preserve-date`/`-p` to sync the modification time between the extracted host file and the file's date on the volume, in whichever direction the copy is going. |
+| `transfer <name> [--to-image] [--text] [-p, --preserve-date]` | Copy a file between the disk image and the host filesystem. By default copies **from** the image to the current directory; pass `--to-image` to copy a host file **to** the image instead, allocating it into the first large-enough gap in the volume's free space and saving the image back to disk (a `.bak` backup of the previous state is written alongside it). Only `name`'s final path component is used as the volume filename (so a full host path works fine), uppercased and limited to 15 characters, matching p-System volume filename conventions. Pass `--text` to convert p-System text file encoding (CR line endings, run-length-encoded indentation) to/from plain LF text. Pass `--preserve-date`/`-p` to sync the modification time between the extracted host file and the file's date on the volume, in whichever direction the copy is going. |
 | `change <from> <to>` | Rename a file on the volume. *(stub — not yet implemented)* |
 | `krunch` | Consolidate free space on the volume. *(stub — not yet implemented)* |
 | `zero` | Clear the volume directory. *(stub — not yet implemented)* |
@@ -63,7 +63,7 @@ p-filer --image my-disk.dsk transfer HELLO.TEXT --text --preserve-date
 p-filer --image my-disk.dsk dump 0 5
 ```
 
-No sample `.dsk` image is included in this repository; supply your own Apple Pascal disk image.
+Sample `.dsk` images are available in [`tests/AppleDsks`](tests/AppleDsks) (see [Tests](#tests) below), or supply your own Apple Pascal disk image.
 
 ## p-code
 
@@ -82,17 +82,20 @@ p-code --code-file <CODE_FILE> <COMMAND>
 | Command | Description |
 |---|---|
 | `list` | Print the file's copyright string and a table of its segments (name, address, length, kind, and packed segment-info: unit number, code type, version). |
-| `disassemble` | Disassemble the p-code in the file. |
+| `disassemble [--offsets] [--bytes]` | Disassemble the p-code in the file. Pass `--offsets` to show each instruction's offset within its segment; pass `--bytes` to show each instruction's raw hex bytes. The two flags are independent and can be combined. |
 
-### Example
+### Examples
 
 ```sh
 p-code --code-file tests/HelloWorld.code list
+
+# Disassemble with both offsets and raw hex bytes shown
+p-code --code-file tests/HelloWorld.code disassemble --offsets --bytes
 ```
 
 ## Tests
 
-The [`tests`](tests) directory contains sample files (`HelloWorld.pas`, `HelloWorld.code`) useful for exercising `p-code` against a known-good codefile.
+The [`tests`](tests) directory contains sample files (`HelloWorld.pas`, `HelloWorld.code`) useful for exercising `p-code` against a known-good codefile, plus `Features.text`, a broader UCSD/Apple Pascal language-feature demo for more thorough manual exercising of compilation and disassembly.
 
 There are also 3 compressed .dsk files (Apple Pascal image format) for testing `p-filer`:
 `empty.dsk` - a disk with no contents
