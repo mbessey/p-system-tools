@@ -64,13 +64,19 @@ BEGIN
 END;
 
 (* Apple Pascal's WRITE/WRITELN can't print a BOOLEAN value directly,
-   unlike ISO standard Pascal -- convert it ourselves. *)
-FUNCTION BoolStr(B: BOOLEAN): STRING;
+   unlike ISO standard Pascal -- convert it ourselves. This has to be a
+   PROCEDURE with a VAR output parameter rather than a FUNCTION: UCSD
+   Pascal only allows a function's result type to be scalar, subrange,
+   or pointer, and STRING is none of those (it's a structured type --
+   a packed array of char with a length byte), so "FUNCTION BoolStr(B:
+   BOOLEAN): STRING" fails to compile with "function result type must
+   be scalar, subrange or pointer". *)
+PROCEDURE BoolStr(B: BOOLEAN; VAR S: STRING);
 BEGIN
   IF B THEN
-    BoolStr := 'TRUE'
+    S := 'TRUE'
   ELSE
-    BoolStr := 'FALSE'
+    S := 'FALSE'
 END;
 
 PROCEDURE Outer;
@@ -148,13 +154,17 @@ VAR I: INTEGER;
     R: REAL;
     Ch: CHAR;
     Today: Weekday;
+    BoolBuf: STRING;
 BEGIN
   I := -7;
   WRITELN('  ABS(-7) = ', ABS(I):1);
   WRITELN('  SQR(6) = ', SQR(6):1);
   R := 3.7;
   WRITELN('  ROUND(3.7) = ', ROUND(R):1, '  TRUNC(3.7) = ', TRUNC(R):1);
-  WRITELN('  ODD(7) = ', BoolStr(ODD(7)), '  ODD(8) = ', BoolStr(ODD(8)));
+  BoolStr(ODD(7), BoolBuf);
+  WRITE('  ODD(7) = ', BoolBuf);
+  BoolStr(ODD(8), BoolBuf);
+  WRITELN('  ODD(8) = ', BoolBuf);
   WRITELN('  PWROFTEN(3) = ', PWROFTEN(3):10:2);
 
   Ch := 'A';
@@ -167,7 +177,10 @@ BEGIN
   WRITELN('  ORD(SUCC(Wed)) = ', ORD(Today):1);
 
   WRITELN('  MAXINT = ', MAXINT:1);
-  WRITELN('  TRUE / FALSE literals: ', BoolStr(TRUE), ' ', BoolStr(FALSE))
+  BoolStr(TRUE, BoolBuf);
+  WRITE('  TRUE / FALSE literals: ', BoolBuf);
+  BoolStr(FALSE, BoolBuf);
+  WRITELN(' ', BoolBuf)
 END;
 
 PROCEDURE ShowLong(Value: LongNum);
@@ -297,6 +310,7 @@ VAR F: TEXT;
     Buffer: PACKED ARRAY [0..511] OF CHAR;
     Line: STRING;
     Transferred: INTEGER;
+    BoolBuf: STRING;
 BEGIN
   (* Typed text-file I/O: REWRITE, WRITELN, CLOSE, RESET, EOF, READLN *)
   REWRITE(F, 'DEMO.TEXT');
@@ -326,7 +340,8 @@ BEGIN
   CLOSE(RawIn, PURGE);
 
   (* Harmless no-ops on the Apple, per the manual *)
-  WRITELN('  UNITBUSY(4) = ', BoolStr(UNITBUSY(4)));
+  BoolStr(UNITBUSY(4), BoolBuf);
+  WRITELN('  UNITBUSY(4) = ', BoolBuf);
   UNITWAIT(4)
 END;
 
