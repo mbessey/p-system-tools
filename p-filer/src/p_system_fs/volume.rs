@@ -265,13 +265,24 @@ mod tests {
     // state (nothing else in the suite depends on cwd).
     static CWD_LOCK: Mutex<()> = Mutex::new(());
 
+    // Restores the process's cwd on drop, including during a panic, so one
+    // failing assertion inside `f` can't leave the cwd pointing at a
+    // tempdir that's about to be deleted -- which would otherwise break
+    // every other test in the process that also depends on cwd.
+    struct RestoreCwd(std::path::PathBuf);
+    impl Drop for RestoreCwd {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+
     fn in_temp_dir(f: impl FnOnce(&std::path::Path)) {
         let _guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let original_cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
+        let _restore = RestoreCwd(original_cwd);
         f(dir.path());
-        std::env::set_current_dir(original_cwd).unwrap();
     }
 
     fn open_volume(image_path: &std::path::Path) -> Volume<AppleDisk> {
@@ -321,6 +332,34 @@ mod tests {
             let message = err.to_string();
             assert!(message.contains("SIXTEEN_CHARS.TX"));
             assert!(message.contains("15 characters"));
+        });
+    }
+
+    #[test]
+    fn transfer_to_image_keeps_entries_sorted_by_first_block() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("blog.dsk"), &image_path).unwrap();
+            // blog.dsk's WORK.TEXT ends at block 16 and MAKEFILES.TEXT
+            // starts at block 30 -- a gap earlier than the volume's tail,
+            // reproducing the scenario that exposed out-of-order entries.
+            std::fs::write("MIDDLE.TEXT", "fits in the gap after WORK.TEXT\n").unwrap();
+
+            let mut volume = open_volume(&image_path);
+            volume.transfer("MIDDLE.TEXT", true, true, false).unwrap();
+
+            let reopened = open_volume(&image_path);
+            let num_files = reopened.directory.volume.num_files as usize;
+            let blocks: Vec<u16> = reopened.directory.entries[..num_files]
+                .iter()
+                .map(|e| e.first_block)
+                .collect();
+            let mut sorted = blocks.clone();
+            sorted.sort();
+            assert_eq!(
+                blocks, sorted,
+                "directory entries must stay in ascending first_block order"
+            );
         });
     }
 

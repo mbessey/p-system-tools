@@ -91,7 +91,18 @@ impl Directory {
                 "{new_name} already exists on volume"
             );
         }
-        self.entries[num_files] = entry;
+        // Real p-System directories keep entries in ascending first_block
+        // order -- other tools (including the real Filer) rely on that
+        // ordering to walk the directory and compute free space, so insert
+        // in place rather than always appending, which would otherwise
+        // leave entries out of order whenever a file lands in a gap instead
+        // of at the volume's tail.
+        let insert_pos = self.entries[..num_files]
+            .iter()
+            .position(|e| e.first_block > entry.first_block)
+            .unwrap_or(num_files);
+        self.entries.copy_within(insert_pos..num_files, insert_pos + 1);
+        self.entries[insert_pos] = entry;
         self.volume.num_files += 1;
         Ok(())
     }
@@ -168,7 +179,7 @@ impl VolumeInfo {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct DirectoryEntry {
     pub(crate) first_block: u16,         // first block of file
     pub(crate) first_after_block: u16,   // first block after file (last block + 1)
@@ -212,7 +223,7 @@ impl DirectoryEntry {
         }
     }
 
-    fn to_bytes(&self) -> [u8; DIRECTORY_ENTRY_SIZE] {
+    fn to_bytes(self) -> [u8; DIRECTORY_ENTRY_SIZE] {
         let mut buf = [0u8; DIRECTORY_ENTRY_SIZE];
         write_u16_le(&mut buf, Self::OFFSET_FIRST_BLOCK, self.first_block)
             .expect("size checked above");
@@ -456,5 +467,43 @@ mod tests {
             date: 0,
         };
         assert!(directory.add_entry(entry).is_err());
+    }
+
+    #[test]
+    fn add_entry_inserts_in_first_block_order() {
+        let mut directory = make_directory(280, &[(6, 20), (100, 110)]);
+        let name: [u8; 16] = to_length_prefixed("MIDDLE.DATA").unwrap();
+        let entry = DirectoryEntry {
+            first_block: 50,
+            first_after_block: 60,
+            file_type: FILE_TYPE_DATAFILE,
+            name,
+            bytes_in_last_block: 512,
+            date: 0,
+        };
+        directory.add_entry(entry).unwrap();
+
+        assert_eq!(directory.volume.num_files, 3);
+        let blocks: Vec<u16> = directory.entries[..3].iter().map(|e| e.first_block).collect();
+        assert_eq!(blocks, vec![6, 50, 100]);
+        assert_eq!(from_length_prefixed(&directory.entries[1].name), "MIDDLE.DATA");
+    }
+
+    #[test]
+    fn add_entry_appends_when_it_belongs_at_the_tail() {
+        let mut directory = make_directory(280, &[(6, 20), (100, 110)]);
+        let name: [u8; 16] = to_length_prefixed("LAST.DATA").unwrap();
+        let entry = DirectoryEntry {
+            first_block: 200,
+            first_after_block: 210,
+            file_type: FILE_TYPE_DATAFILE,
+            name,
+            bytes_in_last_block: 512,
+            date: 0,
+        };
+        directory.add_entry(entry).unwrap();
+
+        let blocks: Vec<u16> = directory.entries[..3].iter().map(|e| e.first_block).collect();
+        assert_eq!(blocks, vec![6, 100, 200]);
     }
 }
