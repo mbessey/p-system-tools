@@ -82,7 +82,7 @@ p-code --code-file <CODE_FILE> <COMMAND>
 | Command | Description |
 |---|---|
 | `list` | Print the file's copyright string and a table of its segments (name, address, length, kind, and packed segment-info: unit number, code type, version). |
-| `disassemble [--offsets] [--bytes]` | Disassemble the p-code in the file. Pass `--offsets` to show each instruction's offset within its segment; pass `--bytes` to show each instruction's raw hex bytes. The two flags are independent and can be combined. |
+| `disassemble [--offsets] [--bytes]` | Disassemble the p-code in the file. Pass `--offsets` to show each instruction's offset within its segment; pass `--bytes` to show each instruction's raw hex bytes. The two flags are independent and can be combined. *(doesn't yet resolve jump targets — see [Known issues](#known-issues))* |
 
 ### Examples
 
