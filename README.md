@@ -82,7 +82,7 @@ p-code --code-file <CODE_FILE> <COMMAND>
 | Command | Description |
 |---|---|
 | `list` | Print the file's copyright string and a table of its segments (name, address, length, kind, and packed segment-info: unit number, code type, version). |
-| `disassemble [--offsets] [--bytes]` | Disassemble the p-code in the file. Pass `--offsets` to show each instruction's offset within its segment; pass `--bytes` to show each instruction's raw hex bytes. The two flags are independent and can be combined. *(doesn't yet resolve jump targets — see [Known issues](#known-issues))* |
+| `disassemble [--offsets] [--bytes] [--no-labels]` | Disassemble the p-code in the file. Pass `--offsets` to show each instruction's offset within its segment; pass `--bytes` to show each instruction's raw hex bytes; pass `--no-labels` to turn off jump-target labels and resolved-target operand text (shown by default). The flags are independent and can be combined. *(`XJP`'s per-case jump table isn't resolved to labels — its addressing convention isn't confirmed; see [`docs/p-code-jumps-and-standard-calls.md`](docs/p-code-jumps-and-standard-calls.md))* |
 
 ### Examples
 
@@ -101,10 +101,6 @@ There are also 3 compressed .dsk files (Apple Pascal image format) for testing `
 `empty.dsk` - a disk with no contents
 `manyfiles.dsk` - a disk with 75 files on it
 `blog.dsk` - a disk with several blog post text files on it
-
-## Known issues
-
-- `p-code disassemble` decodes jump instructions (`UJP`/`FJP`/`XJP`) but doesn't compute or print where they actually jump to, and doesn't follow jumps that land past a procedure's `exit_ic` — so code that's only reachable via such a jump (e.g. one-time startup checks a compiler tucks in after the last source-level instruction) won't show up in the printed listing at all. See [`docs/p-code-jumps-and-standard-calls.md`](docs/p-code-jumps-and-standard-calls.md) for the jump-target algorithm, a concrete worked example of this exact gap, and what it'd take to fix (recursive-descent control-flow tracing, not a naive wider print range).
 
 ## Status
 

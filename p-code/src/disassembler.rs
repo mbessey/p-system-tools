@@ -6,7 +6,9 @@
 pub mod decode;
 pub mod instruction;
 pub mod procedure_dict;
+pub mod resolve;
 
 pub use decode::disassemble;
 pub use instruction::{Mnemonic, Operand, csp_name};
 pub use procedure_dict::parse_procedure_dictionary;
+pub use resolve::{assign_labels, jump_displacement, resolve_jump_target, trace_reachable};

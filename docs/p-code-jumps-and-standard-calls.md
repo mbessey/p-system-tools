@@ -1,10 +1,14 @@
 # p-code jump targets and standard-routine calls
 
-The `p-code disassemble` command decodes raw p-machine instructions but
-doesn't (yet) compute where a jump actually lands, or name which built-in
-routine a `CSP`/`CXP` call reaches. This note works both out by hand,
-against a real compiled program, so the reasoning and the numbers are
-available to whoever tackles adding that to the tool itself.
+The `p-code disassemble` command resolves where a jump (`UJP`/`FJP`/`EFJ`/
+`NFJ`, and `XJP`'s embedded `default` field) actually lands, printing a
+label instead of the raw displacement, and can print reachable code past a
+procedure's `exit_ic` when a jump target lands there. It doesn't (yet) name
+which built-in routine most `CSP`/`CXP` calls reach. This note works both
+problems out by hand, against a real compiled program -- it's the
+derivation the jump-resolution implementation is based on, and a reference
+for anyone extending it further (naming more `CSP`/`CXP` routines below, or
+tackling `XJP`'s per-case table).
 
 Everything here was derived by compiling [`tests/Features.text`](../tests/Features.text)
 on a real/emulated Apple Pascal system into a codefile, disassembling it with
@@ -59,10 +63,13 @@ resolution for the JTAB header's own fields (`enter_ic`, `exit_ic`,
 `param_size`, `data_size` are each stored as "distance from the address of
 this word to the target," resolved via `resolve_self_relative`). The
 negative-`SB` jump scheme is the same trick, just applied to a jump
-instruction's operand instead of a dictionary-header field. `jtab_addr`
-itself isn't currently exposed by that module, and nothing in the crate
-computes a jump *target* today -- `disassemble.rs` only decodes and prints
-the raw signed operand.
+instruction's operand instead of a dictionary-header field. `jtab_addr` is
+exposed as `ProcedureInfo::jtab_addr`, and
+[`p-code/src/disassembler/resolve.rs`](../p-code/src/disassembler/resolve.rs)'s
+`resolve_jump_target` implements exactly this arithmetic --
+`p-code/src/commands/disassemble.rs` uses it to print jump operands as
+labels instead of raw signed displacements (`--no-labels` turns this back
+off).
 
 ### Worked examples
 
@@ -101,28 +108,32 @@ JTAB path back to the loop body.
 
 `main`'s very first instruction is `UJP -10` at segment offset `0x0ab2`.
 Resolving it via JTAB lands at `0x0d70`, which falls *between* that
-procedure's `exit_ic` (`0x0d68`) and `code_end` (`0x0d7e`) -- outside the
-range `disassemble` actually prints (recall `disassemble.rs`'s comment: it
-deliberately stops printing at `exit_ic`, since `code_end` "can run a
-little past it -- alignment padding, or an undecoded jump table"). That
-first jump landing there isn't a fluke, and it isn't dead space either.
-Decoding those 22 bytes by hand gives:
+procedure's `exit_ic` (`0x0d68`) and `code_end` (`0x0d7e`) -- past the
+`[enter_ic, exit_ic)` range `disassemble` always prints unconditionally
+(see `p-code/src/commands/disassemble.rs`'s `print_instructions` doc
+comment for exactly where that unconditional range ends -- `exit_ic`
+itself is now reachability-gated, not automatically included). That
+first jump landing there isn't a fluke, and it isn't dead space either. A
+full recursive-descent trace (see
+[the next section](#how-disassemble-finds-and-prints-code-past-exit_ic))
+resolves what's actually reachable more precisely than this document's
+original hand-decoding did:
 
 ```
-0d68  SLDC 31                             ; PATH A (falls through from exit_ic -- but
-0d69  CSP 22                              ;   see below, this path is never reached at runtime)
-0d6b  SLDC 30
-0d6c  CSP 22
-0d6e  UJP 8    -> 0d78
-0d70  SLDC 30                             ; PATH B -- this is where main's leading UJP -10 lands
+0d68  SLDC 31        ; dead -- nothing jumps here, and CSP 4 {EXIT} above
+0d69  CSP 22         ;   doesn't fall through into it (EXIT halts outright)
+0d6b  SLDC 30        ; dead, same reason
+0d6c  CSP 22         ; dead
+0d6e  UJP 8          ; dead
+0d70  SLDC 30        ; LIVE -- this is where main's leading UJP -10 lands
 0d71  CSP 21
 0d73  SLDC 31
 0d74  CSP 21
-0d76  UJP -12  -> 0d6c                    ; rejoins PATH A partway through
-0d78  RBP 0                               ; the procedure's real, mechanical epilogue
-0d7a  LLA 2
-0d7c  SLDC 12
-0d7d  SLDC 0
+0d76  UJP -12  -> 0x0ab4   ; loops back to main's real body, NOT 0x0d6c
+0d78  RBP 0         ; dead -- nothing ever jumps back here either
+0d7a  LLA 2         ; dead
+0d7c  SLDC 12       ; dead
+0d7d  SLDC 0        ; dead
 ```
 
 The values being pushed -- **30 and 31** -- are exactly the two intrinsic
@@ -130,20 +141,36 @@ segment numbers identified in the [CXP table](#cxp----call-externalsegment-proce
 below (`LongNum`/`STR` support and formatted-`REAL`-write support,
 respectively). This is program-startup code: a one-time check/link step for
 the intrinsic segments this specific program depends on, run once via the
-backward jump from the procedure's true entry point rather than being
-inlined into every `WRITE`/`STR` call site that needs it.
+backward jump from the procedure's true entry point. A *second* jump
+(`0x0d76`'s `UJP -12`) then hands control straight back to `0x0ab4` -- the
+byte right after the leading `UJP` -- to run the program's real body, now
+that the link check is guaranteed to have happened.
 
-It sits past `exit_ic` for a structural reason, not an arbitrary one:
-`exit_ic` marks the procedure's last *source-level* instruction, which for
-`main` is the `CSP 4 {EXIT}` call (`EXIT(PROGRAM)`, at `0x0d66`) --
-and on a real p-machine, that call halts the interpreter outright and never
-falls through to whatever bytes follow it. From the compiler's point of
-view, that makes the space right after it "dead" in the normal
-fall-through sense, and thus free real estate to tuck away code that's
-only ever reached via a deliberate jump. Both paths above converge on
-`RBP 0` at `0x0d78` -- the actual low-level "pop this stack frame" epilogue
-every procedure needs, mechanically distinct from the semantic
-"terminate the whole program" that `EXIT(PROGRAM)` performs earlier.
+**Correction from an earlier draft of this document:** this section
+originally hand-decoded `0x0d76`'s `UJP -12` as landing on `0x0d6c`
+("rejoining PATH A partway through"), and treated `0x0d78`'s `RBP 0` as the
+point every path converges on. Implementing `resolve_jump_target` and
+cross-checking it against the raw JTAB slot bytes at `0x0d7a` showed that
+was a hand-arithmetic slip -- the real target is `0x0ab4`. That changes the
+conclusion substantially: `0x0d68`-`0x0d6e` ("PATH A") and `0x0d78`-`0x0d7d`
+(the "epilogue") are *both* dead -- nothing in this procedure ever jumps to
+either range, and `CSP 4 {EXIT}` genuinely halts the interpreter rather
+than falling through. Only `0x0d70`-`0x0d77` (the segment-link check
+itself) is live. The epilogue bytes exist only because the compiler always
+emits a procedure-exit sequence, whether or not this particular
+procedure's control flow ever reaches it by falling off the end -- `main`
+never does, since it always terminates via the explicit `EXIT(PROGRAM)`
+call partway through its body.
+
+It sits past `exit_ic` for the structural reason this document originally
+identified: `exit_ic` marks the address right after the procedure's last
+*source-level* instruction, which for `main` is the `CSP 4 {EXIT}` call
+(`EXIT(PROGRAM)`, at `0x0d66`, ending at `0x0d68`) -- and on a real
+p-machine, that call halts the interpreter outright and never falls
+through to whatever bytes follow it. From the compiler's point of view,
+that makes the space right after it "dead" in the normal fall-through
+sense, and thus free real estate to tuck away code that's only ever
+reached via a deliberate jump.
 
 This also explains why [`tests/HelloWorld.code`](../tests/HelloWorld.code)
 has no such prologue: its source (`tests/HelloWorld.pas`) uses only plain
@@ -153,53 +180,50 @@ so there's nothing to check or link at startup, and the compiler has no
 reason to generate this prologue at all.
 
 The general lesson: not every jump target lands inside the range
-`disassemble` prints today, and when one doesn't, that's a sign there's
-more *reachable* code past `exit_ic` worth decoding by hand -- not
-necessarily a bug in the tool or the reasoning. See the open question
-below for what it'd take to have the tool discover this automatically.
+`disassemble` prints unconditionally, and when one doesn't, that's a sign
+there's more *reachable* code past `exit_ic` -- `disassemble` now finds and
+prints it automatically (see below), rather than requiring hand-decoding
+the way this document originally did.
 
-## Open question: should `disassemble` follow jumps past `exit_ic`?
+## How `disassemble` finds and prints code past `exit_ic`
 
-Not yet implemented -- worth designing before attempting.
+Implemented in
+[`p-code/src/disassembler/resolve.rs`](../p-code/src/disassembler/resolve.rs)'s
+`trace_reachable`: recursive-descent control-flow tracing, not a linear
+sweep with a fixed cutoff -- a naive sweep to `code_end` is unsound for the
+reason this document already knew: `code_end` can include a stretch of
+pure alignment padding, or a raw `XJP` case-jump table (word-sized data,
+not opcodes at all), and decoding those bytes as if they were instructions
+produces plausible-looking garbage with no way to tell it's garbage.
 
-Given the `main` example above, an obvious next step is: when a jump target
-resolves past `exit_ic` (but still before `code_end`), print that reachable
-tail too instead of leaving it for someone to decode by hand. The naive
-version of this -- just disassemble everything from `enter_ic` all the way
-to `code_end` unconditionally -- is unsound, and this codebase already knows
-why: `code_end` can include a stretch of pure alignment padding, *or* a raw
-`XJP` case-jump table (word-sized data, not opcodes at all). Decoding those
-bytes as if they were instructions produces plausible-looking garbage with
-no way to tell it's garbage.
-
-The reliable way to know which bytes past `exit_ic` are genuinely "live" is
-the same technique real disassemblers use for this exact problem:
-**recursive-descent control-flow tracing**, not a linear sweep with a fixed
-cutoff. Concretely: starting from `enter_ic`, decode forward; whenever a
-`UJP`/`FJP`/`XJP` is reached, resolve its target(s) using the algorithm
-above, and add each target address to a work-list of "known to be a real
+Concretely: starting from `enter_ic`, it decodes forward; whenever a
+`UJP`/`FJP`/`EFJ`/`NFJ` is reached, it resolves the target using the
+algorithm above and adds it to a work-list of "known to be a real
 instruction start" if it hasn't been visited yet (a conditional jump also
-still has its fall-through successor to visit). Keep decoding from every
-address in the work-list until it's empty. Whatever addresses this process
-visits are provably reachable code; anything else in `[exit_ic, code_end)`
-that no traced jump ever points at is unknown -- most likely padding or a
-jump table, but not something to guess-decode.
+keeps its own fall-through successor). `RNP`/`RBP` (return -- the
+p-machine splits "return" into two opcodes by lexical level, but both end
+the procedure) and `CSP` calling `EXIT` specifically are also treated as
+having no fall-through, exactly like `UJP`/`XJP` -- `main`'s own worked
+example above is what surfaced the need for the `EXIT` refinement:
+naively granting `CSP {EXIT}` a fall-through wrongly marked its dead
+duplicate check code ("PATH A") as reachable, since it's the very next
+byte after `EXIT` in program order. `XJP`'s per-case `offsets` table is
+never followed (see [Caveats](#caveats)); only its embedded `default`
+field is resolved, the same as a plain `UJP`/`FJP`. Whatever addresses the
+trace visits are provably reachable code; anything else in `[exit_ic,
+code_end)` that no traced jump ever points at is left unprinted -- most
+likely padding or a jump table, but not something to guess-decode.
 
-Short of that kind of flow tracing, there isn't a fully reliable shortcut.
-The only other signal available without it is `code_end` itself as a hard
-*upper bound* (nothing at or past it is ever code, since that's where the
-JTAB/procedure-dictionary metadata begins) -- useful as a safety rail, but
-it doesn't tell you which bytes *within* `[exit_ic, code_end)` are
-instructions versus data. A weaker heuristic (long runs of `0x00` are
-probably alignment padding, since real code essentially never looks like
-that) can help a human skim raw bytes, as this document did by hand above,
-but it's not something to build correctness on.
-
-Implementing this would require exposing `jtab_addr`/`code_end` from
-`procedure_dict.rs` (today only `code_end` is captured internally, and
-`jtab_addr` isn't kept at all) and teaching `disassemble`/`print_instructions`
-to build a reachable-address set via the work-list above instead of
-`disassembler::disassemble`'s current flat linear sweep.
+`p-code/src/commands/disassemble.rs`'s `print_instructions` keeps printing
+`[enter_ic, exit_ic)` unconditionally in program order, exactly as
+before -- but the instruction sitting *at* `exit_ic` itself is only kept
+if the trace proves it's reachable. For most procedures that's a no-op:
+`exit_ic` lands on a normal return (`RBP`/`RNP`), always reached by
+ordinary fall-through from the body above it. But `main`'s `exit_ic`
+lands on the dead `SLDC 31` at the top of "PATH A" -- provably
+unreachable, and now correctly left out, so a procedure whose only live
+tail code is `main`'s segment-link check shows exactly that (and nothing
+else at or past `exit_ic`).
 
 ## CSP -- call standard procedure
 
@@ -249,7 +273,11 @@ strict 0/1.
 1. Compile a `.text` source into a `.code` file on a real or emulated Apple
    Pascal system.
 2. `p-code --code-file <file> disassemble --offsets --bytes > out.asm`
-3. To resolve a specific negative-`SB` jump by hand: find its enclosing
+   -- jump targets are now labeled and reachable code past `exit_ic` is
+   printed automatically; pass `--no-labels` to see the old raw-displacement
+   view if you want to re-derive a target by hand for cross-checking.
+3. To resolve a specific negative-`SB` jump by hand anyway (e.g. to verify
+   the tool, the way the correction above was found): find its enclosing
    procedure's `code_end` from `disassemble`'s own reported `exit_ic` (its
    `jtab_addr` is `code_end + 8`, though `code_end` itself isn't printed
    today -- see `procedure_dict.rs`), then read the two bytes at
@@ -258,7 +286,8 @@ strict 0/1.
 4. Cross-check any inferred `CSP`/`CXP` routine number against the *exact*
    Pascal statement compiled at that call site, the way this document does
    -- don't trust a routine number in isolation without matching it to
-   source.
+   source. `CSP`/`CXP` routine naming is still a manual, by-hand process --
+   only jump-target resolution has been automated.
 
 ## Caveats
 

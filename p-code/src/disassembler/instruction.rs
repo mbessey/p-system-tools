@@ -130,6 +130,12 @@ impl Instruction {
         code.get(self.offset..self.offset + self.bytes_len)
             .unwrap_or(&[])
     }
+
+    /// This instruction's absolute address, given the `base_offset` (e.g. a
+    /// procedure's `enter_ic`) that `self.offset` is relative to.
+    pub fn addr(&self, base_offset: usize) -> usize {
+        base_offset + self.offset
+    }
 }
 
 pub fn csp_name(sub_opcode: u8) -> Option<&'static str> {

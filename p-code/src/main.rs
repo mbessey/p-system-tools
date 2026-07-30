@@ -28,6 +28,10 @@ enum Commands {
         /// Show each instruction's raw hex bytes
         #[arg(long)]
         bytes: bool,
+        /// Turn off jump-target labels and resolved-target operand text
+        /// (shown by default)
+        #[arg(long)]
+        no_labels: bool,
     },
 }
 
@@ -42,9 +46,11 @@ fn main() -> anyhow::Result<()> {
     let file_name = args.code_file;
     match &args.command {
         Commands::List => commands::list::run(file_name)?,
-        Commands::Disassemble { offsets, bytes } => {
-            commands::disassemble::run(file_name, *offsets, *bytes)?
-        }
+        Commands::Disassemble {
+            offsets,
+            bytes,
+            no_labels,
+        } => commands::disassemble::run(file_name, *offsets, *bytes, !*no_labels)?,
     }
     Ok(())
 }

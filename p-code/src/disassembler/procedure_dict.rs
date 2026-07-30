@@ -16,6 +16,14 @@ pub struct ProcedureInfo {
     pub param_size: u16,
     pub data_size: u16,
     pub code_end: usize,
+    // Address of this procedure's JTAB header -- equivalently code_end + 8.
+    // Stored (rather than left implicit) because it's also the anchor
+    // negative-SB jump displacements resolve against (see
+    // docs/p-code-jumps-and-standard-calls.md): the manual's "SB DIV 2 is a
+    // word offset into JTAB" scheme reads a word at jtab_addr + SB and
+    // interprets it as a further self-relative pointer, the same trick
+    // resolve_self_relative below uses for the header's own fields.
+    pub jtab_addr: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -24,7 +32,16 @@ pub struct ProcedureDictionary {
     pub procedures: Vec<ProcedureInfo>,
 }
 
-fn resolve_self_relative(word_addr: usize, value: u16) -> Option<usize> {
+/// Resolves a self-relative pointer: `word_addr` is the address of the word
+/// holding `value`, which encodes a target as "distance from `word_addr` to
+/// the target." Returns `None` on underflow (a `value` larger than
+/// `word_addr` itself, which can't be a real pointer in this scheme).
+/// `pub(crate)` rather than private: `disassembler::resolve`'s
+/// `resolve_jump_target` uses this exact same arithmetic for negative-`SB`
+/// jump displacements (see the manual quote there) -- it's the same
+/// self-relative-pointer trick applied to a jump operand instead of a
+/// dictionary-header field, so it reuses this rather than reimplementing it.
+pub(crate) fn resolve_self_relative(word_addr: usize, value: u16) -> Option<usize> {
     word_addr.checked_sub(value as usize)
 }
 
@@ -69,6 +86,7 @@ fn parse_jtab(segment: &[u8], jtab_addr: usize) -> Option<ProcedureInfo> {
         param_size,
         data_size,
         code_end: data_size_addr,
+        jtab_addr,
     })
 }
 
@@ -157,6 +175,7 @@ mod tests {
         assert_eq!(p.param_size, 0);
         assert_eq!(p.data_size, 10);
         assert_eq!(p.code_end, 3);
+        assert_eq!(p.jtab_addr, 11);
 
         let instrs = disassemble(&seg[p.enter_ic..p.code_end]);
         assert_eq!(instrs.len(), 2);
@@ -240,6 +259,7 @@ mod tests {
         assert_eq!(p.data_size, 82);
         assert_eq!(p.enter_ic, 0);
         assert_eq!(p.exit_ic, 0x25f - 0x200);
+        assert_eq!(p.jtab_addr, p.code_end + 8);
 
         let instrs = disassemble(&segment[p.enter_ic..p.code_end]);
         // Full expected mnemonic sequence for this procedure's real code,
