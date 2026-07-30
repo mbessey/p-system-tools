@@ -5,7 +5,7 @@ use std::io::prelude::*;
 
 use super::directory::{
     BLOCK_SIZE, Directory, DirectoryEntry, ENTRY_NAME_SIZE, FILE_TYPE_DATAFILE, FILE_TYPE_TEXTFILE,
-    pad_to_block_boundary,
+    bytes_in_last_block, pad_to_block_boundary,
 };
 use super::text::{text_from_blocks, text_to_blocks};
 use crate::disk_image::{DiskImage, WritableDiskImage};
@@ -151,13 +151,25 @@ impl<D: WritableDiskImage> Volume<D> {
                 ENTRY_NAME_SIZE - 1
             );
             let host_bytes = std::fs::read(name)?;
-            let host_len = host_bytes.len();
-            let (block_bytes, file_type) = if is_text {
-                (text_to_blocks(&host_bytes)?, FILE_TYPE_TEXTFILE)
+            // bytes_in_last_block means different things for the two file
+            // types. For a data file it's load-bearing: extraction trims to
+            // it, so it must reflect the real pre-padding content length.
+            // For a text file, real Apple Pascal never seems to compute a
+            // real value here -- every text file on tests/AppleDsks/blog.dsk,
+            // and both a real Editor-authored 0-byte and 89-byte text file
+            // (experiments4.dsk), report a full block (512) regardless of
+            // actual content length. Text files find their own end by
+            // scanning for CR/RLE markers instead, so this field just isn't
+            // used for them; match that rather than computing a real value
+            // no real Filer/Editor ever writes.
+            let (block_bytes, file_type, bytes_in_last_block) = if is_text {
+                let blocks = text_to_blocks(&host_bytes)?;
+                (blocks, FILE_TYPE_TEXTFILE, BLOCK_SIZE as u16)
             } else {
+                let content_len = host_bytes.len();
                 let mut b = host_bytes;
                 pad_to_block_boundary(&mut b);
-                (b, FILE_TYPE_DATAFILE)
+                (b, FILE_TYPE_DATAFILE, bytes_in_last_block(content_len))
             };
             let blocks_needed_total = block_bytes.len() / BLOCK_SIZE;
             anyhow::ensure!(
@@ -174,14 +186,6 @@ impl<D: WritableDiskImage> Volume<D> {
                 systime_to_pdate(std::fs::metadata(name)?.modified()?)?
             } else {
                 now_to_pdate()?
-            };
-            let bytes_in_last_block = if is_text {
-                BLOCK_SIZE as u16
-            } else if host_len == 0 {
-                0
-            } else {
-                let rem = (host_len % BLOCK_SIZE) as u16;
-                if rem == 0 { BLOCK_SIZE as u16 } else { rem }
             };
             self.directory.add_entry(DirectoryEntry {
                 first_block: start_block,
@@ -408,6 +412,11 @@ mod tests {
             let entry = &reopened.directory.entries[0];
             assert_eq!(from_length_prefixed(&entry.name), "HELLO.TEXT");
             assert_eq!(entry.file_type, FILE_TYPE_TEXTFILE);
+            // Real Apple Pascal always reports a full block here for text
+            // files regardless of actual content length -- confirmed
+            // against every text file on tests/AppleDsks/blog.dsk and a
+            // real Editor-authored 0-byte text file on experiments4.dsk.
+            assert_eq!(entry.bytes_in_last_block, 512);
 
             std::fs::remove_file("HELLO.TEXT").unwrap();
             reopened.transfer("HELLO.TEXT", false, true, false).unwrap();

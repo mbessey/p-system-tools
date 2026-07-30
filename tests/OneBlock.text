@@ -1,0 +1,8 @@
+(* Single-content-block test -- see AlignB.text; kept deliberately
+   short and worded differently. *)
+PROGRAM OneBlock;
+VAR N: INTEGER;
+BEGIN
+  N := 42;
+  WRITELN('N = ', N:1)
+END.

@@ -1,0 +1,14 @@
+(* Isolates whether the word-alignment pad byte a procedure sometimes
+   gets right before its JTAB header (see procedure_dict.rs's ExitIC
+   comment, and the trace_reachable fix for RBP as a control-flow
+   terminator) is driven purely by whether the procedure's compiled
+   byte length happens to be odd -- with no dependency on intrinsic
+   units (segments 30/31) at all. Compare the compiled output against
+   AlignB.text, which differs by exactly one bare WRITELN statement
+   (WRITELN with no arguments compiles to CXP 0,22 + CSP 0 {IOCHECK},
+   5 bytes -- an odd count, so it should flip whichever of this pair
+   needs a pad byte and which doesn't). *)
+PROGRAM AlignA;
+BEGIN
+  WRITELN('Hello')
+END.

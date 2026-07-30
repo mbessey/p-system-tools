@@ -185,6 +185,45 @@ there's more *reachable* code past `exit_ic` -- `disassemble` now finds and
 prints it automatically (see below), rather than requiring hand-decoding
 the way this document originally did.
 
+### `code_end`'s trailing gap isn't just alignment padding
+
+Five minimal programs (`tests/AlignA.text`, `AlignB.text`, `RealOnly.text`,
+`LNumOnly.text`, `NestedUnit.text` -- written to isolate exactly one
+variable each: intrinsic-unit usage, and word-alignment parity) were
+compiled and their `.CODE` output inspected the same way `main`'s tail was
+above: locate the procedure's real final instruction (`RBP`/`RNP`) and
+diff its end address against `code_end`.
+
+For the two programs with no intrinsic-unit dependency at all
+(`AlignA`/`AlignB`, both ending in a plain `RBP` with no segment-link
+tail), the gap is exactly what word-alignment padding predicts: `RBP`
+ends on an odd address in both, and both have exactly one trailing `0x00`
+byte to bring `code_end` to the next even address. `NestedUnit`'s nested
+procedure (ends in `RNP`, odd address) matches the same pattern. This part
+is confirmed.
+
+The three programs that *do* depend on an intrinsic unit
+(`RealOnly`/`LNumOnly`/`NestedUnit`'s `main`) don't fit that model cleanly:
+
+| Program | `RBP` ends at | parity | gap to `code_end` | gap bytes |
+|---|---|---|---|---|
+| `RealOnly` | `0x3e` | even | 2 bytes | `3c 00` |
+| `LNumOnly` | `0x77` | odd | 3 bytes | `00 76 00` |
+| `NestedUnit` (`main`) | `0x117` | odd | 3 bytes | `00 76 00` |
+
+Two things don't fit "just alignment padding": `RealOnly` already ends on
+an even address, yet still has a 2-byte gap (padding alone predicts zero);
+and `LNumOnly`/`NestedUnit` -- two different programs -- have
+byte-identical 3-byte gaps, which looks more like something fixed or
+structural (or leftover compiler buffer content that happened to match
+between these two particular compiles) than genuine per-program padding.
+Whatever's living in that extra 1-2 bytes for intrinsic-unit-using
+procedures specifically isn't identified yet -- not something
+`disassemble` needs to resolve (it already prints/hides this range
+correctly via reachability, regardless of what the unprinted bytes turn
+out to mean), but a loose end worth another look if anyone digs into the
+segment-link mechanism further.
+
 ## How `disassemble` finds and prints code past `exit_ic`
 
 Implemented in

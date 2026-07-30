@@ -1,0 +1,14 @@
+(* Uses only formatted REAL output (the CXP 31,4 "WRITE REAL(file,
+   value, width, decimals)" routine documented in
+   docs/p-code-jumps-and-standard-calls.md's CXP table) -- no LongNum
+   at all. Isolates whether main's segment-link-check prologue appears
+   for *just* segment 31, independent of segment 30. Deliberately
+   avoids PWROFTEN (Features.text's own formatted-REAL example): that's
+   CSP 36, a standard-routine call unrelated to segment linking, and
+   would muddy this test. Compare against LNumOnly.text. *)
+PROGRAM RealOnly;
+VAR R: REAL;
+BEGIN
+  R := 3.5;
+  WRITELN('R = ', R:10:2)
+END.

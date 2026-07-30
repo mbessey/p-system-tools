@@ -1,0 +1,27 @@
+(* Uses both LongNum and formatted REAL (see LNumOnly.text/RealOnly.text),
+   but only inside a nested procedure -- never directly in the main
+   body. Isolates whether the segment-link-check prologue is always
+   hoisted to main() regardless of which procedure first needs the
+   intrinsic segments (a true "once, at program start" check, the way
+   Features.text's main() does it even though GotoDemo/LoopDemo/etc.
+   are the callers that use those segments), or instead happens locally
+   wherever segments 30/31 are first referenced. *)
+PROGRAM NestedUnit;
+TYPE LongNum = INTEGER[12];
+
+PROCEDURE UsesIntrinsics;
+VAR L: LongNum;
+    S: STRING;
+    R: REAL;
+BEGIN
+  L := 123456789012;
+  STR(L, S);
+  R := 3.5;
+  WRITELN('L = ', S, '  R = ', R:10:2)
+END;
+
+BEGIN
+  WRITELN('Before calling UsesIntrinsics');
+  UsesIntrinsics;
+  WRITELN('After calling UsesIntrinsics')
+END.

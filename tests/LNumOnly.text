@@ -1,0 +1,15 @@
+(* Uses only LongNum (extended-precision INTEGER, the CXP 30,4
+   intrinsic support routine STR() invokes once a value exceeds
+   MAXINT -- see Features.text's ShowLong/StringDemo) -- no formatted
+   REAL output at all. Isolates whether main's segment-link-check
+   prologue appears for *just* segment 30, independent of segment 31.
+   Compare against RealOnly.text. *)
+PROGRAM LNumOnly;
+TYPE LongNum = INTEGER[12];
+VAR L: LongNum;
+    S: STRING;
+BEGIN
+  L := 123456789012; (* exceeds MAXINT -> automatically LONG INTEGER *)
+  STR(L, S);
+  WRITELN('L = ', S)
+END.

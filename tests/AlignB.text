@@ -1,0 +1,8 @@
+(* See AlignA.text -- identical except for one extra bare WRITELN,
+   which should shift this program's compiled body length by an odd
+   number of bytes relative to AlignA.text. *)
+PROGRAM AlignB;
+BEGIN
+  WRITELN('Hello');
+  WRITELN
+END.

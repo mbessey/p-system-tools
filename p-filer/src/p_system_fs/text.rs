@@ -1,17 +1,64 @@
-// Inverse of text_from_blocks. Produces a 1024-byte zero-filled header (the
-// real Apple Pascal editor stores page-mapping metadata there, but
-// text_from_blocks skips those bytes unconditionally without interpreting
-// them, so files this tool writes read back correctly through this tool and
-// open in the real editor, just without fast paging) followed by the
-// encoded text, zero-padded to a whole number of 512-byte blocks.
+// Builds the 1024-byte editor header every p-System text file starts with
+// (the real Editor's page-mapping/margin/place-marker state, restored when
+// the file is reopened). Field layout per
+// https://markbessey.blog/2025/05/08/ucsd-pascal-in-depth-3-n/, which
+// reverse-engineered it by hex-dumping real Editor-authored files -- this
+// project has no other authoritative source for it. Only the first 512
+// bytes carry fields; the second 512 bytes are reserved and always zero.
+//
+// A prior version of this function left the whole header zero-filled,
+// on the (untested, and apparently wrong) assumption that
+// `text_from_blocks` -- which really does ignore this region
+// unconditionally -- meant the real Editor would too. It doesn't: opening
+// a file written that way could leave the real Editor's screen stuck in
+// reverse video with nothing displayed. `right_margin: 0` is the leading
+// suspect (a word-wrap column of zero is a plausible way to break the
+// Editor's line-layout math), so that's the one field this function is
+// confident is actively dangerous to leave at zero; the others below are
+// filled in with reasonable, low-risk defaults (matching what an unused
+// feature's "off" state should look like) rather than confirmed-correct
+// values, since nothing in this project has verified them against a real
+// Editor session yet.
+fn text_file_header() -> [u8; 1024] {
+    let mut header = [0u8; 1024];
+    header[0..2].copy_from_slice(&1u16.to_le_bytes()); // version -- observed to always be 1
+    // marker_count (2..4), marker_labels (4..84), the 10 unused bytes
+    // (84..94), and marker_positions (94..114) all stay zero: this tool
+    // has no notion of Editor place-markers, so "zero markers defined" is
+    // the correct state to write, not a guess.
+    // auto_indent (114..116), fill (116..118), and token (118..120) are
+    // boolean feature flags -- zero/off is a safe default for all three.
+    // left_margin (120..122) and para_margin (124..126) at zero are
+    // ordinary, unremarkable states (text starts at column 0, no extra
+    // paragraph indent) -- ordinary defaults, not zero-is-dangerous cases.
+    header[122..124].copy_from_slice(&80u16.to_le_bytes()); // right_margin -- 0 is the suspected freeze trigger; 80 matches this project's own line-length convention elsewhere
+    header[126..128].copy_from_slice(&0x5eu16.to_le_bytes()); // command_char -- '^', the UCSD Pascal Editor's documented command-prefix character
+    // date_created (128..130) and date_last_used (130..132) stay zero
+    // (an unset/null p-System date); filler (132..512) and the entire
+    // second 512-byte block (512..1024) are reserved and always zero.
+    header
+}
+
+// Inverse of text_from_blocks: builds the 1024-byte editor header (see
+// text_file_header) followed by the encoded text, zero-padded to a whole
+// number of 512-byte blocks.
 //
 // 0x00, 0x0d, and 0x10 are reserved by the on-disk encoding (null padding,
 // line terminator, and RLE-indent marker respectively) and can't be
 // represented as literal content, so input containing any of them is
 // rejected rather than silently written in a form that won't decode back
 // to the original bytes.
+//
+// Returns just the padded block bytes ready to write to disk. Unlike a
+// binary/data-file transfer, the caller doesn't need the real pre-padding
+// content length: every text file on real Apple Pascal media (confirmed
+// against tests/AppleDsks/blog.dsk and a real Editor-authored 0-byte file)
+// reports a full block (512) in its directory entry's `bytes_in_last_block`
+// regardless of actual content length. Text files find their own end by
+// scanning for CR/RLE markers, not via that field, so the real Filer/Editor
+// apparently never bothers computing a real value for it.
 pub fn text_to_blocks(text: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let mut result = vec![0u8; 1024];
+    let mut result = text_file_header().to_vec();
     let mut i = 0;
     let mut at_line_start = true;
     while i < text.len() {
@@ -52,6 +99,21 @@ pub fn text_to_blocks(text: &[u8]) -> anyhow::Result<Vec<u8>> {
         i += 1;
     }
     super::directory::pad_to_block_boundary(&mut result);
+    // The real Apple Pascal Filer/Editor always allocates at least two
+    // 512-byte content blocks for a text file, no matter how short --
+    // confirmed by hex-dumping real Editor-created files: even a 0-byte
+    // file gets a lone CR in its first content block and a second content
+    // block that's entirely unused and zero-filled. A file this tool
+    // wrote with only one content block (short enough that padding to a
+    // block boundary above didn't reach a second one) reliably locked up
+    // the real Editor's screen in reverse video with nothing displayed;
+    // matching the real minimum block count fixes it. The header (1024
+    // bytes) doesn't count as a content block, so the floor is
+    // 1024 + 2*BLOCK_SIZE, not 2*BLOCK_SIZE.
+    let min_len = 1024 + 2 * super::directory::BLOCK_SIZE;
+    if result.len() < min_len {
+        result.resize(min_len, 0);
+    }
     Ok(result)
 }
 
@@ -141,6 +203,23 @@ mod tests {
     }
 
     #[test]
+    fn header_sets_documented_fields_not_all_zero() {
+        // Regression test: this header used to be all-zero, which is
+        // believed to be why opening a tool-written file in the real
+        // Editor could leave its screen stuck in reverse video. Field
+        // offsets per
+        // https://markbessey.blog/2025/05/08/ucsd-pascal-in-depth-3-n/.
+        let header = text_file_header();
+        assert_eq!(u16::from_le_bytes([header[0], header[1]]), 1); // version
+        assert_eq!(u16::from_le_bytes([header[2], header[3]]), 0); // marker_count
+        assert_eq!(&header[4..84], &[0u8; 80][..]); // marker_labels, unused
+        assert_eq!(u16::from_le_bytes([header[122], header[123]]), 80); // right_margin
+        assert_eq!(u16::from_le_bytes([header[126], header[127]]), 0x5e); // command_char, '^'
+        assert_eq!(&header[132..512], &[0u8; 380][..]); // filler
+        assert_eq!(&header[512..1024], &[0u8; 512][..]); // second block, reserved
+    }
+
+    #[test]
     fn text_round_trip_simple() {
         let text =
             "This is about as simple as it gets.\nA couple of lines,\n\nAnd two paragraphs.\n";
@@ -172,6 +251,32 @@ mod tests {
         assert_eq!(content[10], 0x10); // RLE marker
         assert_eq!(content[11], 0x20 + 1); // count == 1
         assert_eq!(String::from_utf8(text_from_blocks(&blocks)).unwrap(), text);
+    }
+
+    #[test]
+    fn text_to_blocks_always_allocates_at_least_two_content_blocks() {
+        // Regression test for a real, confirmed bug: this tool used to
+        // allocate only as many content blocks as the encoded content
+        // needed, which could be just one for a short file. Hex-dumping
+        // real Editor-created files (including a literal 0-byte one)
+        // showed the real Apple Pascal Filer/Editor always allocates at
+        // least two 512-byte content blocks, no matter how little content
+        // there is -- a tool-written file with only one reliably locked
+        // up the real Editor's screen in reverse video. `text_to_blocks`
+        // must never return fewer than 1024 (header) + 2*512 (content) =
+        // 2048 bytes, even for empty input.
+        let blocks = text_to_blocks(b"").unwrap();
+        assert_eq!(blocks.len(), 2048);
+        assert_eq!(&blocks[1024..], &[0u8; 1024][..]); // both content blocks empty
+
+        let blocks = text_to_blocks(b"short\n").unwrap();
+        assert_eq!(blocks.len(), 2048);
+
+        // A file whose content genuinely needs more than 2 content blocks
+        // must not be truncated or shrunk back down to the minimum.
+        let long_text = "x\n".repeat(1000);
+        let blocks = text_to_blocks(long_text.as_bytes()).unwrap();
+        assert!(blocks.len() > 2048);
     }
 
     #[test]

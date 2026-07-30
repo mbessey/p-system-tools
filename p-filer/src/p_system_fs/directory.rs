@@ -27,6 +27,35 @@ pub(crate) fn pad_to_block_boundary(buf: &mut Vec<u8>) {
     buf.resize(padded_len, 0);
 }
 
+// A DirectoryEntry's `bytes_in_last_block` field, computed from a file's
+// real (pre-padding) content length. Used only for raw/binary-data
+// transfers (--to-image without --text): extraction trims the file's last
+// block down to this many real bytes, so it must reflect the truth.
+// `content_len` must be the length *before* `pad_to_block_boundary` ran;
+// once padded, the real length is unrecoverable (every length in the same
+// block rounds up to the same padded size).
+//
+// Text-mode transfers don't call this at all -- real Apple Pascal always
+// writes a full block (512) here for text files regardless of actual
+// content length (confirmed against tests/AppleDsks/blog.dsk and real
+// Editor-authored fixtures), since a text file locates its own end by
+// scanning for CR/RLE markers rather than trusting this field.
+//
+// 0 for an empty file (no real content, not "one full block" -- there's
+// nothing in a last block that doesn't exist); otherwise `content_len`'s
+// remainder mod BLOCK_SIZE, except when content fits exactly into whole
+// blocks, where the remainder is 0 but the true answer is a full block
+// (the file's last block genuinely has BLOCK_SIZE real bytes in it, not
+// zero).
+pub(crate) fn bytes_in_last_block(content_len: usize) -> u16 {
+    if content_len == 0 {
+        0
+    } else {
+        let rem = (content_len % BLOCK_SIZE) as u16;
+        if rem == 0 { BLOCK_SIZE as u16 } else { rem }
+    }
+}
+
 // Directory entries are each 26 bytes. The first is a bit special, and contains information about the volume itself.
 // The rest are the files on the volume. Directory entries occupy blocks 2 through 5 on the disk.
 #[derive(Debug)]
