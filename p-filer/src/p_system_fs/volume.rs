@@ -5,7 +5,7 @@ use std::io::prelude::*;
 
 use super::directory::{
     BLOCK_SIZE, Directory, DirectoryEntry, ENTRY_NAME_SIZE, FILE_TYPE_DATAFILE, FILE_TYPE_TEXTFILE,
-    bytes_in_last_block, pad_to_block_boundary,
+    VOLUME_NAME_SIZE, bytes_in_last_block, pad_to_block_boundary,
 };
 use super::text::{text_from_blocks, text_to_blocks};
 use crate::disk_image::{DiskImage, WritableDiskImage};
@@ -118,8 +118,17 @@ impl<D: WritableDiskImage> Volume<D> {
         self.disk.save()
     }
 
-    pub fn remove(&self, name: &str) -> anyhow::Result<()> {
+    // Removes name's directory entry and persists the updated directory.
+    // The file's old blocks aren't zeroed -- only the entry is spliced
+    // out, matching the real Filer's Remove and the same "absent from
+    // entries[..num_files] means free" convention the rest of this format
+    // relies on (see Directory::remove_entry). Those blocks simply become
+    // part of a gap the next transfer/krunch can reuse or close.
+    pub fn remove(&mut self, name: &str) -> anyhow::Result<()> {
         println!("Removing {name} on {0}", self.image_name);
+        self.directory.remove_entry(name)?;
+        self.disk.write_blocks(2, &self.directory.to_bytes());
+        self.save()?;
         Ok(())
     }
 
@@ -246,18 +255,82 @@ impl<D: WritableDiskImage> Volume<D> {
         }
     }
 
-    pub fn change(&self, from: &str, to: &str) -> anyhow::Result<()> {
+    // Renames from's entry to to. to is a volume filename (not a host
+    // path), so it's uppercased and length-checked the same way
+    // transfer's to-image path validates one (see the volume_name
+    // handling above) -- both are subject to the same 15-character,
+    // conventionally-uppercase p-System naming rule.
+    pub fn change(&mut self, from: &str, to: &str) -> anyhow::Result<()> {
         println!("Renaming {from} to {to} on {0}", self.image_name);
+        let to_upper = to.to_ascii_uppercase();
+        anyhow::ensure!(
+            to_upper.len() < ENTRY_NAME_SIZE,
+            "\"{to_upper}\" is {0} characters, but p-System volume filenames \
+             are limited to {1} characters",
+            to_upper.len(),
+            ENTRY_NAME_SIZE - 1
+        );
+        self.directory.rename_entry(from, &to_upper)?;
+        self.disk.write_blocks(2, &self.directory.to_bytes());
+        self.save()?;
         Ok(())
     }
 
-    pub fn krunch(&self) -> anyhow::Result<()> {
+    // Consolidates free space by sliding every file down to close any gap
+    // before it, merging all free space into one region at the volume's
+    // tail. Directory::compact decides the new block layout (a pure,
+    // disk-free decision); this just carries out the physical block
+    // moves it prescribes. Each move reads its source blocks into an
+    // owned buffer before writing the destination, both because
+    // read_blocks' borrow of self.disk must end before write_blocks can
+    // borrow it mutably, and because compact's ordering guarantee (a
+    // move's destination never reaches into a later entry's still-unread
+    // source blocks) depends on each entry being fully read before any
+    // subsequent write.
+    pub fn krunch(&mut self) -> anyhow::Result<()> {
         println!("Consolidating free space on {0}", self.image_name);
+        for mv in self.directory.compact() {
+            let block_bytes = self
+                .disk
+                .read_blocks(mv.from as usize, mv.block_count as usize)
+                .to_vec();
+            self.disk.write_blocks(mv.to as usize, &block_bytes);
+        }
+        self.disk.write_blocks(2, &self.directory.to_bytes());
+        self.save()?;
         Ok(())
     }
 
-    pub fn zero(&self) -> anyhow::Result<()> {
+    // Clears the volume's catalog. Only num_files needs to change --
+    // to_bytes() already writes every slot past num_files as an empty
+    // entry regardless of what's sitting in the in-memory array -- so
+    // this is sufficient to make the whole directory serialize as empty.
+    // File blocks themselves aren't touched, matching the real Filer's
+    // Zero-Directory command and the same "absence from
+    // entries[..num_files] means free" convention remove relies on.
+    //
+    // The real Filer's Zero command also prompts for a new volume name
+    // while it's at it, so new_name mirrors that: None leaves the
+    // existing name alone, Some renames the volume the same way `change`
+    // renames a file (uppercased, length-checked -- but against
+    // VOLUME_NAME_SIZE, not ENTRY_NAME_SIZE, since the volume header's
+    // name field is only 7 characters wide, shorter than a file's 15).
+    pub fn zero(&mut self, new_name: Option<&str>) -> anyhow::Result<()> {
         println!("Clearing directory on {0}", self.image_name);
+        if let Some(name) = new_name {
+            let name_upper = name.to_ascii_uppercase();
+            anyhow::ensure!(
+                name_upper.len() < VOLUME_NAME_SIZE,
+                "\"{name_upper}\" is {0} characters, but p-System volume names \
+                 are limited to {1} characters",
+                name_upper.len(),
+                VOLUME_NAME_SIZE - 1
+            );
+            self.directory.set_volume_name(&name_upper)?;
+        }
+        self.directory.volume.num_files = 0;
+        self.disk.write_blocks(2, &self.directory.to_bytes());
+        self.save()?;
         Ok(())
     }
 }
@@ -547,6 +620,187 @@ mod tests {
 
             let mut volume = open_volume(&image_path);
             assert!(volume.transfer("BIGFILE.DATA", true, false, false).is_err());
+        });
+    }
+
+    #[test]
+    fn remove_deletes_the_entry_and_persists_it() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("blog.dsk"), &image_path).unwrap();
+
+            let mut volume = open_volume(&image_path);
+            let names_before: Vec<String> = {
+                let num_files = volume.directory.volume.num_files as usize;
+                volume.directory.entries[..num_files]
+                    .iter()
+                    .map(|e| from_length_prefixed(&e.name))
+                    .collect()
+            };
+            assert!(names_before.contains(&"WORK.TEXT".to_string()));
+
+            volume.remove("WORK.TEXT").unwrap();
+
+            let reopened = open_volume(&image_path);
+            let num_files = reopened.directory.volume.num_files as usize;
+            assert_eq!(num_files, names_before.len() - 1);
+            let names_after: Vec<String> = reopened.directory.entries[..num_files]
+                .iter()
+                .map(|e| from_length_prefixed(&e.name))
+                .collect();
+            assert!(!names_after.contains(&"WORK.TEXT".to_string()));
+            // Removing WORK.TEXT (the first entry) shouldn't disturb the
+            // relative order of the remaining entries.
+            assert_eq!(names_after, names_before[1..]);
+        });
+    }
+
+    #[test]
+    fn remove_errors_when_name_not_found() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("blog.dsk"), &image_path).unwrap();
+
+            let mut volume = open_volume(&image_path);
+            let err = volume.remove("NOTHERE.TEXT").unwrap_err();
+            assert!(err.to_string().contains("NOTHERE.TEXT"));
+        });
+    }
+
+    #[test]
+    fn change_renames_the_file_and_it_stays_readable_under_the_new_name() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("blog.dsk"), &image_path).unwrap();
+
+            let mut volume = open_volume(&image_path);
+            volume.change("SHORT.TEXT", "RENAMED.TEXT").unwrap();
+
+            let mut reopened = open_volume(&image_path);
+            // The old name is gone...
+            assert!(reopened.transfer("SHORT.TEXT", false, true, false).is_err());
+            // ...but the file is still readable under its new name.
+            reopened
+                .transfer("RENAMED.TEXT", false, true, false)
+                .unwrap();
+            assert!(std::fs::read_to_string("RENAMED.TEXT").is_ok());
+        });
+    }
+
+    #[test]
+    fn change_uppercases_the_target_name_and_rejects_over_length_names() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("blog.dsk"), &image_path).unwrap();
+
+            let mut volume = open_volume(&image_path);
+            volume.change("SHORT.TEXT", "lowercase.text").unwrap();
+            let num_files = volume.directory.volume.num_files as usize;
+            assert!(
+                volume.directory.entries[..num_files]
+                    .iter()
+                    .any(|e| from_length_prefixed(&e.name) == "LOWERCASE.TEXT")
+            );
+
+            let err = volume
+                .change("SHORT2.TEXT", "SIXTEEN_CHARS.TXT")
+                .unwrap_err();
+            assert!(err.to_string().contains("15 characters"));
+        });
+    }
+
+    #[test]
+    fn krunch_closes_gaps_while_keeping_file_contents_intact() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("blog.dsk"), &image_path).unwrap();
+
+            // Capture WORK.TEXT's content before krunching so it can be
+            // compared against what's readable afterwards.
+            let mut before = open_volume(&image_path);
+            before.transfer("WORK.TEXT", false, true, false).unwrap();
+            let work_before = std::fs::read_to_string("WORK.TEXT").unwrap();
+            std::fs::remove_file("WORK.TEXT").unwrap();
+
+            let mut volume = open_volume(&image_path);
+            volume.krunch().unwrap();
+
+            let mut reopened = open_volume(&image_path);
+            let num_files = reopened.directory.volume.num_files as usize;
+            // Every entry should now immediately follow the previous one
+            // (or the directory itself, for the first entry) -- no gaps
+            // left anywhere.
+            let mut cursor = reopened.directory.volume.first_block_after_directory;
+            for entry in &reopened.directory.entries[..num_files] {
+                assert_eq!(entry.first_block, cursor);
+                cursor = entry.first_after_block;
+            }
+
+            reopened.transfer("WORK.TEXT", false, true, false).unwrap();
+            let work_after = std::fs::read_to_string("WORK.TEXT").unwrap();
+            assert_eq!(work_before, work_after);
+        });
+    }
+
+    #[test]
+    fn zero_clears_the_directory() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("blog.dsk"), &image_path).unwrap();
+
+            let mut volume = open_volume(&image_path);
+            volume.zero(None).unwrap();
+
+            let reopened = open_volume(&image_path);
+            assert_eq!(reopened.directory.volume.num_files, 0);
+            // No new name was given -- the volume's own name shouldn't
+            // have been touched.
+            assert_eq!(
+                from_length_prefixed(&reopened.directory.volume.volume_name),
+                "BLOG"
+            );
+        });
+    }
+
+    #[test]
+    fn zero_with_new_name_renames_and_uppercases_the_volume() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("blog.dsk"), &image_path).unwrap();
+
+            let mut volume = open_volume(&image_path);
+            volume.zero(Some("newvol")).unwrap();
+
+            let reopened = open_volume(&image_path);
+            assert_eq!(reopened.directory.volume.num_files, 0);
+            assert_eq!(
+                from_length_prefixed(&reopened.directory.volume.volume_name),
+                "NEWVOL"
+            );
+        });
+    }
+
+    #[test]
+    fn zero_rejects_over_length_new_name() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("blog.dsk"), &image_path).unwrap();
+
+            let mut volume = open_volume(&image_path);
+            // 8 characters -- one over the volume name's 7-character limit
+            // (shorter than a file's 15-character limit).
+            let err = volume.zero(Some("TOOLONG8")).unwrap_err();
+            assert!(err.to_string().contains("7 characters"));
+
+            // The rejected rename shouldn't have partially applied --
+            // the directory must still parse with its original name and
+            // file count untouched.
+            let reopened = open_volume(&image_path);
+            assert_eq!(reopened.directory.volume.num_files, 8);
+            assert_eq!(
+                from_length_prefixed(&reopened.directory.volume.volume_name),
+                "BLOG"
+            );
         });
     }
 }

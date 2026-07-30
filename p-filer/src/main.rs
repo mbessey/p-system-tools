@@ -27,7 +27,7 @@ enum Commands {
     Transfer(TransferArgs),
     Change { from: String, to: String },
     Krunch,
-    Zero,
+    Zero { new_name: Option<String> },
     Dump { from: usize, to: usize },
 }
 
@@ -55,7 +55,7 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Change { from, to } => d.change(from, to)?,
         Commands::Krunch => d.krunch()?,
-        Commands::Zero => d.zero()?,
+        Commands::Zero { new_name } => d.zero(new_name.as_deref())?,
         Commands::Dump { from, to } => d.dump(*from, *to)?,
     }
     Ok(())

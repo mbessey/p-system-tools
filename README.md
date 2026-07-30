@@ -7,7 +7,7 @@ This is a Rust workspace containing two command-line utilities:
 - **[p-filer](p-filer)** — inspects and manipulates Apple Pascal disk images (`.dsk` files).
 - **[p-code](p-code)** — inspects UCSD p-System code files (linked object files, produced by the Pascal compiler/linker).
 
-Both tools are early-stage / work-in-progress: several subcommands are stubs that print a message but don't yet perform the action (see [Status](#status) below).
+Both tools are early-stage / work-in-progress (see [Status](#status) below).
 
 ## Building
 
@@ -43,11 +43,11 @@ p-filer --image <IMAGE> <COMMAND>
 | Command | Description |
 |---|---|
 | `list` | Print volume info (name, size, date) and every directory entry (name, type, block range, size, date). |
-| `remove <name>` | Delete a file from the volume. *(stub — not yet implemented)* |
+| `remove <name>` | Delete a file from the volume: removes its directory entry and saves the image. The file's blocks aren't zeroed, only freed — they become part of a gap that a later `transfer --to-image` or `krunch` can reuse or close. |
 | `transfer <name> [--to-image] [--text] [-p, --preserve-date]` | Copy a file between the disk image and the host filesystem. By default copies **from** the image to the current directory; pass `--to-image` to copy a host file **to** the image instead, allocating it into the first large-enough gap in the volume's free space and saving the image back to disk (a `.bak` backup of the previous state is written alongside it). Only `name`'s final path component is used as the volume filename (so a full host path works fine), uppercased and limited to 15 characters, matching p-System volume filename conventions. Pass `--text` to convert p-System text file encoding (CR line endings, run-length-encoded indentation) to/from plain LF text. Pass `--preserve-date`/`-p` to sync the modification time between the extracted host file and the file's date on the volume, in whichever direction the copy is going. |
-| `change <from> <to>` | Rename a file on the volume. *(stub — not yet implemented)* |
-| `krunch` | Consolidate free space on the volume. *(stub — not yet implemented)* |
-| `zero` | Clear the volume directory. *(stub — not yet implemented)* |
+| `change <from> <to>` | Rename a file on the volume. `to` is uppercased and limited to 15 characters, the same convention `transfer --to-image` uses for a new volume filename. |
+| `krunch` | Consolidate free space on the volume by sliding every file down to close any gap before it, merging all free space into one region at the volume's tail. |
+| `zero [new_name]` | Clear the volume directory, marking every file as deleted. File blocks themselves aren't touched — only the directory's file count is reset, so the data is still physically present (and unrecoverable through this tool) until new files overwrite it. Optionally pass `new_name` to also rename the volume itself while zeroing it, matching the real Filer's Zero command; it's uppercased and limited to 7 characters (shorter than a file's 15-character limit). |
 | `dump <from> <to>` | Hex/ASCII dump of disk blocks `from` through `to` (inclusive). |
 
 ### Examples
@@ -104,7 +104,7 @@ There are also 3 compressed .dsk files (Apple Pascal image format) for testing `
 
 ## Status
 
-This project is under active development. Expect missing features and rough edges (several `p-filer` subcommands are still stubs — see the command tables above).
+This project is under active development. Expect missing features and rough edges (for example, `p-code`'s disassembler has known gaps in jump-target/reachability tracking — see the `p-code` section above).
 
 ## License
 

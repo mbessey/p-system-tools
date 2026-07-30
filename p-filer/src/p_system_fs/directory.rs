@@ -1,7 +1,7 @@
 use crate::disk_image::DiskImage;
 use p_system_format::bytes::{read_array, read_u16_le, write_array, write_u16_le};
 use p_system_format::error::FormatError;
-use p_system_format::pascal_string::from_length_prefixed;
+use p_system_format::pascal_string::{from_length_prefixed, to_length_prefixed};
 
 const VOLUME_INFO_SIZE: usize = 26;
 const DIRECTORY_ENTRY_SIZE: usize = 26;
@@ -14,6 +14,13 @@ pub(crate) const DIRECTORY_BLOCKS_SIZE: usize = 4 * BLOCK_SIZE;
 // since byte 0 is the length). The single source of truth for both the
 // field's own size and any length check performed before encoding a name.
 pub(crate) const ENTRY_NAME_SIZE: usize = 16;
+
+// Size of VolumeInfo's length-prefixed volume_name field (so 7 characters).
+// Deliberately smaller than ENTRY_NAME_SIZE -- despite the volume header
+// and a file entry both occupying a 26-byte directory slot, real p-System
+// volume names are limited to 7 characters, shorter than the 15-character
+// limit on file names, so this can't just reuse ENTRY_NAME_SIZE.
+pub(crate) const VOLUME_NAME_SIZE: usize = 8;
 
 // Standard UCSD p-System directory file type codes.
 pub(crate) const FILE_TYPE_TEXTFILE: u16 = 3;
@@ -150,6 +157,38 @@ impl Directory {
             .map(|(start, _)| start)
     }
 
+    // Slides every entry down to close gaps before it, merging all free
+    // space into one trailing region -- the consolidation that
+    // free_ranges' doc comment anticipated. Returns the physical block
+    // moves the caller must perform, in the order they must happen:
+    // because entries are kept sorted by first_block and a destination is
+    // never later than its own original position, cursor <=
+    // entries[i].first_block always holds, which in turn guarantees
+    // cursor-after-move-i <= entries[i+1].first_block (no overlap existed
+    // in the original layout). So writing move i's destination can never
+    // clobber entry i+1's still-unread source blocks -- moves are safe to
+    // perform strictly in the returned order without needing a scratch
+    // copy of the whole disk.
+    pub(crate) fn compact(&mut self) -> Vec<BlockMove> {
+        let num_files = self.volume.num_files as usize;
+        let mut moves = Vec::new();
+        let mut cursor = self.volume.first_block_after_directory;
+        for entry in &mut self.entries[..num_files] {
+            let block_count = entry.block_count() as u16;
+            if entry.first_block != cursor {
+                moves.push(BlockMove {
+                    from: entry.first_block,
+                    to: cursor,
+                    block_count,
+                });
+                entry.first_block = cursor;
+                entry.first_after_block = cursor + block_count;
+            }
+            cursor += block_count;
+        }
+        moves
+    }
+
     pub(crate) fn add_entry(&mut self, entry: DirectoryEntry) -> anyhow::Result<()> {
         let num_files = self.volume.num_files as usize;
         anyhow::ensure!(num_files < NUM_ENTRIES, "directory is full");
@@ -176,19 +215,80 @@ impl Directory {
         self.volume.num_files += 1;
         Ok(())
     }
+
+    // Splices `name`'s entry out of the directory. There's no delete flag
+    // in this format -- liveness is purely "index < num_files" -- so
+    // removal means shifting every later entry down by one slot (the
+    // mirror image of add_entry's insert-in-place shift) and decrementing
+    // num_files. Shifting rather than swap-removing preserves the
+    // ascending-first_block ordering that add_entry maintains, which
+    // other tools rely on. The freed slot is re-zeroed defensively, even
+    // though to_bytes() already zero-fills everything past num_files
+    // regardless -- otherwise a stale duplicate-looking entry would sit
+    // in memory until the next serialize.
+    pub(crate) fn remove_entry(&mut self, name: &str) -> anyhow::Result<()> {
+        let num_files = self.volume.num_files as usize;
+        let pos = self.entries[..num_files]
+            .iter()
+            .position(|e| from_length_prefixed(&e.name) == name)
+            .ok_or_else(|| anyhow::anyhow!("{name} not found on volume"))?;
+        self.entries.copy_within(pos + 1..num_files, pos);
+        self.entries[num_files - 1] = DirectoryEntry::empty();
+        self.volume.num_files -= 1;
+        Ok(())
+    }
+
+    // Renames `from`'s entry to `to`. Renaming never touches first_block,
+    // so the sorted-by-first_block ordering is unaffected. The `i == pos`
+    // guard below lets a no-op rename (to == from) through without
+    // tripping the duplicate-name check on the entry being renamed.
+    pub(crate) fn rename_entry(&mut self, from: &str, to: &str) -> anyhow::Result<()> {
+        let num_files = self.volume.num_files as usize;
+        let pos = self.entries[..num_files]
+            .iter()
+            .position(|e| from_length_prefixed(&e.name) == from)
+            .ok_or_else(|| anyhow::anyhow!("{from} not found on volume"))?;
+        for (i, entry) in self.entries[..num_files].iter().enumerate() {
+            anyhow::ensure!(
+                i == pos || from_length_prefixed(&entry.name) != to,
+                "{to} already exists on volume"
+            );
+        }
+        self.entries[pos].name = to_length_prefixed::<ENTRY_NAME_SIZE>(to)?;
+        Ok(())
+    }
+
+    // Sets the volume's own name (the header entry's name, not a file's).
+    // Separate from rename_entry: there's no duplicate-name check to make
+    // here (the volume name isn't compared against file names), and the
+    // length limit is VOLUME_NAME_SIZE, not ENTRY_NAME_SIZE.
+    pub(crate) fn set_volume_name(&mut self, name: &str) -> anyhow::Result<()> {
+        self.volume.volume_name = to_length_prefixed::<VOLUME_NAME_SIZE>(name)?;
+        Ok(())
+    }
+}
+
+// A single physical block-range move that Directory::compact has decided
+// krunch needs to perform, expressed purely in terms of block numbers so
+// Directory (which has no disk access) can hand the decision off to
+// Volume (which does).
+pub(crate) struct BlockMove {
+    pub(crate) from: u16,
+    pub(crate) to: u16,
+    pub(crate) block_count: u16,
 }
 
 #[derive(Debug)]
 pub struct VolumeInfo {
-    pub(crate) first_system_block: u16,          // always zero
-    pub(crate) first_block_after_directory: u16, // always 6
-    pub(crate) file_type: u16,                   // always zero
-    pub(crate) volume_name: [u8; 8],             // Pascal string - length is first byte
-    pub(crate) num_blocks: u16,                  // number of blocks in volume
-    pub(crate) num_files: u16,                   // number of files in directory
-    pub(crate) last_access_time: u16,            // last access time - always zero?
-    pub(crate) date: u16,                        // date set by user
-    pub(crate) reserved: [u8; 4],                // reserved for future use
+    pub(crate) first_system_block: u16,             // always zero
+    pub(crate) first_block_after_directory: u16,    // always 6
+    pub(crate) file_type: u16,                      // always zero
+    pub(crate) volume_name: [u8; VOLUME_NAME_SIZE], // Pascal string - length is first byte
+    pub(crate) num_blocks: u16,                     // number of blocks in volume
+    pub(crate) num_files: u16,                      // number of files in directory
+    pub(crate) last_access_time: u16,               // last access time - always zero?
+    pub(crate) date: u16,                           // date set by user
+    pub(crate) reserved: [u8; 4],                   // reserved for future use
 }
 
 impl VolumeInfo {
@@ -214,7 +314,7 @@ impl VolumeInfo {
             )
             .expect("size checked above"),
             file_type: read_u16_le(bytes, Self::OFFSET_FILE_TYPE).expect("size checked above"),
-            volume_name: read_array::<8>(bytes, Self::OFFSET_VOLUME_NAME)
+            volume_name: read_array::<VOLUME_NAME_SIZE>(bytes, Self::OFFSET_VOLUME_NAME)
                 .expect("size checked above"),
             num_blocks: read_u16_le(bytes, Self::OFFSET_NUM_BLOCKS).expect("size checked above"),
             num_files: read_u16_le(bytes, Self::OFFSET_NUM_FILES).expect("size checked above"),
@@ -390,7 +490,10 @@ mod tests {
         }
     }
 
-    fn make_directory(num_blocks: u16, entries_data: &[(u16, u16)]) -> Directory {
+    // pub(super) so the proptest-based stress test in the sibling
+    // `proptests` module can build a starting Directory the same way
+    // these example-based tests do.
+    pub(super) fn make_directory(num_blocks: u16, entries_data: &[(u16, u16)]) -> Directory {
         let entries: [DirectoryEntry; NUM_ENTRIES] = std::array::from_fn(|i| {
             if i < entries_data.len() {
                 let (first_block, first_after_block) = entries_data[i];
@@ -410,7 +513,7 @@ mod tests {
             first_system_block: 0,
             first_block_after_directory: 6,
             file_type: 0,
-            volume_name: [0u8; 8],
+            volume_name: [0u8; VOLUME_NAME_SIZE],
             num_blocks,
             num_files: entries_data.len() as u16,
             last_access_time: 0,
@@ -673,6 +776,141 @@ mod tests {
     }
 
     #[test]
+    fn remove_entry_removes_from_middle_and_preserves_order() {
+        let mut directory = make_directory(280, &[]);
+        for (file_name, first_block, first_after_block) in [
+            ("FIRST.TEXT", 6, 10),
+            ("MIDDLE.TEXT", 10, 14),
+            ("LAST.TEXT", 14, 18),
+        ] {
+            directory
+                .add_entry(DirectoryEntry {
+                    first_block,
+                    first_after_block,
+                    file_type: FILE_TYPE_TEXTFILE,
+                    name: to_length_prefixed::<ENTRY_NAME_SIZE>(file_name).unwrap(),
+                    bytes_in_last_block: 512,
+                    date: 0,
+                })
+                .unwrap();
+        }
+
+        directory.remove_entry("MIDDLE.TEXT").unwrap();
+
+        assert_eq!(directory.volume.num_files, 2);
+        let names: Vec<String> = directory.entries[..2]
+            .iter()
+            .map(|e| from_length_prefixed(&e.name))
+            .collect();
+        assert_eq!(names, vec!["FIRST.TEXT", "LAST.TEXT"]);
+    }
+
+    #[test]
+    fn remove_entry_errors_when_not_found() {
+        let mut directory = make_directory(280, &[]);
+        assert!(directory.remove_entry("NOTHERE.TEXT").is_err());
+    }
+
+    #[test]
+    fn rename_entry_renames_and_rejects_duplicate_target() {
+        let mut directory = make_directory(280, &[]);
+        directory
+            .add_entry(DirectoryEntry {
+                first_block: 6,
+                first_after_block: 8,
+                file_type: FILE_TYPE_TEXTFILE,
+                name: to_length_prefixed::<ENTRY_NAME_SIZE>("OLD.TEXT").unwrap(),
+                bytes_in_last_block: 512,
+                date: 0,
+            })
+            .unwrap();
+        directory
+            .add_entry(DirectoryEntry {
+                first_block: 8,
+                first_after_block: 10,
+                file_type: FILE_TYPE_TEXTFILE,
+                name: to_length_prefixed::<ENTRY_NAME_SIZE>("OTHER.TEXT").unwrap(),
+                bytes_in_last_block: 512,
+                date: 0,
+            })
+            .unwrap();
+
+        directory.rename_entry("OLD.TEXT", "NEW.TEXT").unwrap();
+        assert_eq!(from_length_prefixed(&directory.entries[0].name), "NEW.TEXT");
+
+        assert!(directory.rename_entry("NEW.TEXT", "OTHER.TEXT").is_err());
+        assert!(directory.rename_entry("NOTHERE.TEXT", "X.TEXT").is_err());
+    }
+
+    #[test]
+    fn rename_entry_to_same_name_is_a_no_op() {
+        let mut directory = make_directory(280, &[]);
+        directory
+            .add_entry(DirectoryEntry {
+                first_block: 6,
+                first_after_block: 8,
+                file_type: FILE_TYPE_TEXTFILE,
+                name: to_length_prefixed::<ENTRY_NAME_SIZE>("SAME.TEXT").unwrap(),
+                bytes_in_last_block: 512,
+                date: 0,
+            })
+            .unwrap();
+        directory.rename_entry("SAME.TEXT", "SAME.TEXT").unwrap();
+        assert_eq!(
+            from_length_prefixed(&directory.entries[0].name),
+            "SAME.TEXT"
+        );
+    }
+
+    #[test]
+    fn set_volume_name_encodes_the_given_name() {
+        let mut directory = make_directory(280, &[]);
+        directory.set_volume_name("NEWVOL").unwrap();
+        assert_eq!(
+            from_length_prefixed(&directory.volume.volume_name),
+            "NEWVOL"
+        );
+    }
+
+    #[test]
+    fn set_volume_name_rejects_names_over_the_volume_limit() {
+        // 8 characters -- one over VOLUME_NAME_SIZE's 7-character limit,
+        // which is shorter than a file entry's 15-character limit (the
+        // two share a 26-byte directory slot but not the same layout).
+        let mut directory = make_directory(280, &[]);
+        assert!(directory.set_volume_name("TOOLONG8").is_err());
+    }
+
+    #[test]
+    fn compact_closes_a_middle_gap() {
+        let mut directory = make_directory(280, &[(6, 20), (100, 110)]);
+        let moves = directory.compact();
+
+        assert_eq!(moves.len(), 1);
+        assert_eq!(moves[0].from, 100);
+        assert_eq!(moves[0].to, 20);
+        assert_eq!(moves[0].block_count, 10);
+
+        let blocks: Vec<(u16, u16)> = directory.entries[..2]
+            .iter()
+            .map(|e| (e.first_block, e.first_after_block))
+            .collect();
+        assert_eq!(blocks, vec![(6, 20), (20, 30)]);
+    }
+
+    #[test]
+    fn compact_already_contiguous_layout_returns_no_moves() {
+        let mut directory = make_directory(280, &[(6, 20), (20, 30)]);
+        assert_eq!(directory.compact().len(), 0);
+    }
+
+    #[test]
+    fn compact_empty_volume_returns_no_moves() {
+        let mut directory = make_directory(280, &[]);
+        assert_eq!(directory.compact().len(), 0);
+    }
+
+    #[test]
     fn block_count_is_normal_difference_for_a_well_formed_entry() {
         let entry = DirectoryEntry {
             first_block: 10,
@@ -696,5 +934,167 @@ mod tests {
             date: 0,
         };
         assert_eq!(entry.block_count(), 0);
+    }
+}
+
+// Property-based stress test for the directory-mutation methods
+// (add_entry, remove_entry, rename_entry, compact). Rather than checking
+// one hand-picked scenario like the example-based tests above, this
+// throws long random sequences of operations at a Directory and checks,
+// after every single one, that the invariants the rest of this format
+// depends on still hold -- most importantly the ascending-first_block
+// ordering add_entry/remove_entry are supposed to preserve, and that
+// nothing ever overlaps or silently loses/resizes a file. A parallel
+// "shadow" model (just name -> size) tracks what *should* be on the
+// volume so each check can compare against ground truth instead of only
+// checking internal self-consistency.
+#[cfg(test)]
+mod proptests {
+    use super::tests::make_directory;
+    use super::*;
+    use proptest::prelude::*;
+    use proptest::test_runner::TestCaseError;
+    use std::collections::HashMap;
+
+    // A small closed alphabet rather than arbitrary strings: with only a
+    // handful of possible names, random Add/Remove/Rename operations
+    // actually collide with each other (same name added twice, renaming
+    // onto an existing name, removing something already removed) instead
+    // of almost always missing, which is what exercises add_entry's
+    // duplicate check and remove_entry's/rename_entry's not-found paths.
+    const NAMES: [&str; 6] = ["A.TEXT", "B.TEXT", "C.TEXT", "D.TEXT", "E.TEXT", "F.TEXT"];
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        Add { name_idx: usize, blocks: u16 },
+        Remove { name_idx: usize },
+        Rename { from_idx: usize, to_idx: usize },
+        Krunch,
+    }
+
+    fn op_strategy() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            (0..NAMES.len(), 0u16..8).prop_map(|(name_idx, blocks)| Op::Add { name_idx, blocks }),
+            (0..NAMES.len()).prop_map(|name_idx| Op::Remove { name_idx }),
+            (0..NAMES.len(), 0..NAMES.len())
+                .prop_map(|(from_idx, to_idx)| Op::Rename { from_idx, to_idx }),
+            Just(Op::Krunch),
+        ]
+    }
+
+    fn live_entries(directory: &Directory) -> &[DirectoryEntry] {
+        &directory.entries[..directory.volume.num_files as usize]
+    }
+
+    // Checks the invariants that must hold after *every* operation,
+    // regardless of whether that operation succeeded: the live entries
+    // must stay sorted and non-overlapping (what add_entry/remove_entry
+    // are relied on to preserve), and every live entry's name and size
+    // must match the shadow model exactly (nothing lost, resized, or
+    // fabricated).
+    fn check_invariants(
+        directory: &Directory,
+        shadow: &HashMap<String, u16>,
+    ) -> Result<(), TestCaseError> {
+        let entries = live_entries(directory);
+        prop_assert_eq!(
+            entries.len(),
+            shadow.len(),
+            "live entry count must match the shadow model"
+        );
+        for pair in entries.windows(2) {
+            prop_assert!(
+                pair[0].first_after_block <= pair[1].first_block,
+                "entries must stay sorted and non-overlapping: {:?} then {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        for entry in entries {
+            let name = from_length_prefixed(&entry.name);
+            let expected_size = shadow
+                .get(&name)
+                .copied()
+                .ok_or_else(|| TestCaseError::fail(format!("{name} on volume but not tracked")))?;
+            prop_assert_eq!(
+                entry.block_count() as u16,
+                expected_size,
+                "size mismatch for {}",
+                name
+            );
+        }
+        Ok(())
+    }
+
+    proptest! {
+        // Higher than proptest's default 256 cases, since this is meant
+        // to be a stress test -- but kept in the low thousands (rather
+        // than higher, effectively-free-in-release-mode counts) so this
+        // doesn't noticeably slow down a plain unoptimized `cargo test`.
+        #![proptest_config(ProptestConfig::with_cases(1024))]
+        #[test]
+        fn directory_stays_consistent_under_random_operations(
+            ops in proptest::collection::vec(op_strategy(), 0..60)
+        ) {
+            // 280 blocks matches the real fixture disks (tests/AppleDsks);
+            // large enough that most Adds succeed, small enough that the
+            // directory (77-entry cap) and free space both get contended.
+            let mut directory = make_directory(280, &[]);
+            let mut shadow: HashMap<String, u16> = HashMap::new();
+
+            for op in ops {
+                match op {
+                    Op::Add { name_idx, blocks } => {
+                        let name = NAMES[name_idx];
+                        if let Some(start) = directory.find_free_range(blocks) {
+                            let entry = DirectoryEntry {
+                                first_block: start,
+                                first_after_block: start + blocks,
+                                file_type: FILE_TYPE_DATAFILE,
+                                name: to_length_prefixed::<ENTRY_NAME_SIZE>(name).unwrap(),
+                                bytes_in_last_block: 512,
+                                date: 0,
+                            };
+                            if directory.add_entry(entry).is_ok() {
+                                shadow.insert(name.to_string(), blocks);
+                            }
+                        }
+                    }
+                    Op::Remove { name_idx } => {
+                        let name = NAMES[name_idx];
+                        if directory.remove_entry(name).is_ok() {
+                            shadow.remove(name);
+                        }
+                    }
+                    Op::Rename { from_idx, to_idx } => {
+                        let from = NAMES[from_idx];
+                        let to = NAMES[to_idx];
+                        if directory.rename_entry(from, to).is_ok()
+                            && let Some(size) = shadow.remove(from)
+                        {
+                            shadow.insert(to.to_string(), size);
+                        }
+                    }
+                    Op::Krunch => {
+                        let before: u16 = live_entries(&directory)
+                            .iter()
+                            .map(|e| e.block_count() as u16)
+                            .sum();
+                        directory.compact();
+                        let after: u16 = live_entries(&directory)
+                            .iter()
+                            .map(|e| e.block_count() as u16)
+                            .sum();
+                        prop_assert_eq!(before, after, "compact must not change total occupied blocks");
+                        prop_assert!(
+                            directory.free_ranges().len() <= 1,
+                            "compact must merge all free space into at most one trailing gap"
+                        );
+                    }
+                }
+
+                check_invariants(&directory, &shadow)?;
+            }
+        }
     }
 }
