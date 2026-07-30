@@ -62,12 +62,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.104"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
-
-[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -315,20 +309,20 @@ checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 name = "p-code"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "clap",
  "p-system-format",
+ "thiserror",
 ]
 
 [[package]]
 name = "p-filer"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "clap",
  "p-system-format",
  "proptest",
  "tempfile",
+ "thiserror",
 ]
 
 [[package]]

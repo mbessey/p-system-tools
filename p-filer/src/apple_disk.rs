@@ -1,4 +1,5 @@
 use crate::disk_image::{DiskImage, WritableDiskImage};
+use crate::error::Error;
 use std::io::Write;
 
 const TRACK_SIZE: usize = 16 * 256;
@@ -7,11 +8,13 @@ const TRACK_SIZE: usize = 16 * 256;
 // track. Used to un-shuffle on load and re-shuffle on save.
 const SECTOR_MAP: [usize; 16] = [0, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 15];
 
-fn validate_size(len: usize) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        len != 0 && len.is_multiple_of(TRACK_SIZE),
-        "disk image size ({len} bytes) is not a whole number of tracks ({TRACK_SIZE} bytes each)"
-    );
+fn validate_size(len: usize) -> Result<(), Error> {
+    if len == 0 || !len.is_multiple_of(TRACK_SIZE) {
+        return Err(Error::InvalidImageSize {
+            len,
+            track_size: TRACK_SIZE,
+        });
+    }
     Ok(())
 }
 
@@ -37,14 +40,14 @@ pub struct AppleDisk {
 }
 
 impl AppleDisk {
-    pub fn from_file(name: &str, verbose: bool) -> anyhow::Result<Self> {
+    pub fn from_file(name: &str, verbose: bool) -> Result<Self, Error> {
         Ok(Self {
             blocks: Self::read_buffer(name, verbose)?,
             source_path: name.to_string(),
         })
     }
 
-    fn read_buffer(name: &str, verbose: bool) -> anyhow::Result<Vec<u8>> {
+    fn read_buffer(name: &str, verbose: bool) -> Result<Vec<u8>, Error> {
         let contents: Vec<u8> = std::fs::read(name)?;
         validate_size(contents.len())?;
 
@@ -102,7 +105,7 @@ impl WritableDiskImage for AppleDisk {
         self.blocks[start..end].copy_from_slice(data);
     }
 
-    fn save(&self) -> anyhow::Result<()> {
+    fn save(&self) -> Result<(), Error> {
         let backup_path = format!("{}.bak", self.source_path);
         std::fs::copy(&self.source_path, &backup_path)?;
 

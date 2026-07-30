@@ -57,7 +57,7 @@ fn text_file_header() -> [u8; 1024] {
 // regardless of actual content length. Text files find their own end by
 // scanning for CR/RLE markers, not via that field, so the real Filer/Editor
 // apparently never bothers computing a real value for it.
-pub fn text_to_blocks(text: &[u8]) -> anyhow::Result<Vec<u8>> {
+pub fn text_to_blocks(text: &[u8]) -> Result<Vec<u8>, crate::error::Error> {
     let mut result = text_file_header().to_vec();
     let mut i = 0;
     let mut at_line_start = true;
@@ -88,11 +88,7 @@ pub fn text_to_blocks(text: &[u8]) -> anyhow::Result<Vec<u8>> {
                 at_line_start = true;
             }
             0x00 | 0x0d | 0x10 => {
-                anyhow::bail!(
-                    "input contains byte {byte:#04x}, which is reserved by the \
-                     p-System text encoding and can't be represented in a \
-                     text-mode transfer (retry without --text)"
-                );
+                return Err(crate::error::Error::ReservedTextByte { byte });
             }
             _ => result.push(byte),
         }

@@ -1,7 +1,9 @@
 use clap::{Parser, Subcommand};
 mod commands;
 mod disassembler;
+mod error;
 mod segment_dictionary;
+use error::Error;
 
 /// A command-file tool for manipulating UCSD pascal object files
 #[derive(Parser)]
@@ -35,7 +37,16 @@ enum Commands {
     },
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> std::process::ExitCode {
+    if let Err(e) = run() {
+        eprintln!("Error: {e}");
+        std::process::ExitCode::FAILURE
+    } else {
+        std::process::ExitCode::SUCCESS
+    }
+}
+
+fn run() -> Result<(), Error> {
     let args = MainArgs::parse();
     if args.verbose {
         println!(

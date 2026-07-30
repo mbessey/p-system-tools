@@ -1,8 +1,10 @@
 use clap::{Args, Parser, Subcommand};
 mod apple_disk;
 mod disk_image;
+mod error;
 mod p_system_fs;
 use apple_disk::AppleDisk;
+use error::Error;
 use p_system_fs::Volume;
 
 /// A command-file tool for manipulating Apple Pascal disk images
@@ -42,7 +44,16 @@ struct TransferArgs {
     preserve_date: bool,
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> std::process::ExitCode {
+    if let Err(e) = run() {
+        eprintln!("Error: {e}");
+        std::process::ExitCode::FAILURE
+    } else {
+        std::process::ExitCode::SUCCESS
+    }
+}
+
+fn run() -> Result<(), Error> {
     let args = MainArgs::parse();
     let verbose = args.verbose;
     let image = args.image;

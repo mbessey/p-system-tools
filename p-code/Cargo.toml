@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1"
+thiserror = "2"
 clap = { version = "4.5.36", features = ["derive"] }
 p-system-format = { path = "../p-system-format" }

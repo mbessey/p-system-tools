@@ -1,6 +1,6 @@
 use crate::segment_dictionary::{SegmentDictionary, string_from_segment_info};
 
-pub fn run(file_name: String) -> anyhow::Result<()> {
+pub fn run(file_name: String) -> Result<(), crate::error::Error> {
     println!("Listing code file {file_name}");
     let contents = std::fs::read(file_name)?;
     let segment_dictionary = SegmentDictionary::parse(&contents)?;

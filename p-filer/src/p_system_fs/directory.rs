@@ -1,4 +1,5 @@
 use crate::disk_image::DiskImage;
+use crate::error::Error;
 use p_system_format::bytes::{read_array, read_u16_le, write_array, write_u16_le};
 use p_system_format::error::FormatError;
 use p_system_format::pascal_string::{from_length_prefixed, to_length_prefixed};
@@ -189,15 +190,16 @@ impl Directory {
         moves
     }
 
-    pub(crate) fn add_entry(&mut self, entry: DirectoryEntry) -> anyhow::Result<()> {
+    pub(crate) fn add_entry(&mut self, entry: DirectoryEntry) -> Result<(), Error> {
         let num_files = self.volume.num_files as usize;
-        anyhow::ensure!(num_files < NUM_ENTRIES, "directory is full");
+        if num_files >= NUM_ENTRIES {
+            return Err(Error::DirectoryFull);
+        }
         let new_name = from_length_prefixed(&entry.name);
         for existing in &self.entries[..num_files] {
-            anyhow::ensure!(
-                from_length_prefixed(&existing.name) != new_name,
-                "{new_name} already exists on volume"
-            );
+            if from_length_prefixed(&existing.name) == new_name {
+                return Err(Error::NameAlreadyExists { name: new_name });
+            }
         }
         // Real p-System directories keep entries in ascending first_block
         // order -- other tools (including the real Filer) rely on that
@@ -226,12 +228,14 @@ impl Directory {
     // though to_bytes() already zero-fills everything past num_files
     // regardless -- otherwise a stale duplicate-looking entry would sit
     // in memory until the next serialize.
-    pub(crate) fn remove_entry(&mut self, name: &str) -> anyhow::Result<()> {
+    pub(crate) fn remove_entry(&mut self, name: &str) -> Result<(), Error> {
         let num_files = self.volume.num_files as usize;
         let pos = self.entries[..num_files]
             .iter()
             .position(|e| from_length_prefixed(&e.name) == name)
-            .ok_or_else(|| anyhow::anyhow!("{name} not found on volume"))?;
+            .ok_or_else(|| Error::EntryNotFound {
+                name: name.to_string(),
+            })?;
         self.entries.copy_within(pos + 1..num_files, pos);
         self.entries[num_files - 1] = DirectoryEntry::empty();
         self.volume.num_files -= 1;
@@ -242,17 +246,20 @@ impl Directory {
     // so the sorted-by-first_block ordering is unaffected. The `i == pos`
     // guard below lets a no-op rename (to == from) through without
     // tripping the duplicate-name check on the entry being renamed.
-    pub(crate) fn rename_entry(&mut self, from: &str, to: &str) -> anyhow::Result<()> {
+    pub(crate) fn rename_entry(&mut self, from: &str, to: &str) -> Result<(), Error> {
         let num_files = self.volume.num_files as usize;
         let pos = self.entries[..num_files]
             .iter()
             .position(|e| from_length_prefixed(&e.name) == from)
-            .ok_or_else(|| anyhow::anyhow!("{from} not found on volume"))?;
+            .ok_or_else(|| Error::EntryNotFound {
+                name: from.to_string(),
+            })?;
         for (i, entry) in self.entries[..num_files].iter().enumerate() {
-            anyhow::ensure!(
-                i == pos || from_length_prefixed(&entry.name) != to,
-                "{to} already exists on volume"
-            );
+            if i != pos && from_length_prefixed(&entry.name) == to {
+                return Err(Error::NameAlreadyExists {
+                    name: to.to_string(),
+                });
+            }
         }
         self.entries[pos].name = to_length_prefixed::<ENTRY_NAME_SIZE>(to)?;
         Ok(())
@@ -262,7 +269,7 @@ impl Directory {
     // Separate from rename_entry: there's no duplicate-name check to make
     // here (the volume name isn't compared against file names), and the
     // length limit is VOLUME_NAME_SIZE, not ENTRY_NAME_SIZE.
-    pub(crate) fn set_volume_name(&mut self, name: &str) -> anyhow::Result<()> {
+    pub(crate) fn set_volume_name(&mut self, name: &str) -> Result<(), Error> {
         self.volume.volume_name = to_length_prefixed::<VOLUME_NAME_SIZE>(name)?;
         Ok(())
     }

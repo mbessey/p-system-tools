@@ -1,3 +1,4 @@
+use crate::error::Error;
 use p_system_format::pascal_string::{from_length_prefixed, to_length_prefixed};
 use p_system_format::pdate::{now_to_pdate, pdate_to_string, pdate_to_systime, systime_to_pdate};
 use std::fs::File;
@@ -17,7 +18,7 @@ pub struct Volume<D: DiskImage> {
 }
 
 impl<D: DiskImage> Volume<D> {
-    pub fn new(disk: D, image_name: String) -> anyhow::Result<Self> {
+    pub fn new(disk: D, image_name: String) -> Result<Self, Error> {
         let directory = Directory::parse(&disk)?;
         Ok(Self {
             disk,
@@ -26,7 +27,7 @@ impl<D: DiskImage> Volume<D> {
         })
     }
 
-    pub fn list(&self) -> anyhow::Result<()> {
+    pub fn list(&self) -> Result<(), Error> {
         println!("Listing files on {0}", self.image_name);
         println!(
             "First block (should be 0): {}",
@@ -71,18 +72,24 @@ impl<D: DiskImage> Volume<D> {
         Ok(())
     }
 
-    pub fn dump(&self, from: usize, to: usize) -> anyhow::Result<()> {
-        anyhow::ensure!(from <= to, "from ({from}) must be less than to ({to})");
-        anyhow::ensure!(
-            to <= self.disk.num_blocks(),
-            "to ({to}) must be less than {0} blocks",
-            self.disk.num_blocks()
-        );
-        anyhow::ensure!(
-            from <= self.disk.num_blocks(),
-            "from ({from}) must be less than {0} blocks",
-            self.disk.num_blocks()
-        );
+    pub fn dump(&self, from: usize, to: usize) -> Result<(), Error> {
+        if from > to {
+            return Err(Error::DumpRangeInverted { from, to });
+        }
+        if to > self.disk.num_blocks() {
+            return Err(Error::DumpBlockOutOfRange {
+                which: "to",
+                value: to,
+                num_blocks: self.disk.num_blocks(),
+            });
+        }
+        if from > self.disk.num_blocks() {
+            return Err(Error::DumpBlockOutOfRange {
+                which: "from",
+                value: from,
+                num_blocks: self.disk.num_blocks(),
+            });
+        }
         println!(
             "Dumping contexts of {0} from block {1} to {2}",
             self.image_name, from, to
@@ -114,7 +121,7 @@ impl<D: DiskImage> Volume<D> {
 }
 
 impl<D: WritableDiskImage> Volume<D> {
-    pub fn save(&self) -> anyhow::Result<()> {
+    pub fn save(&self) -> Result<(), Error> {
         self.disk.save()
     }
 
@@ -124,7 +131,7 @@ impl<D: WritableDiskImage> Volume<D> {
     // entries[..num_files] means free" convention the rest of this format
     // relies on (see Directory::remove_entry). Those blocks simply become
     // part of a gap the next transfer/krunch can reuse or close.
-    pub fn remove(&mut self, name: &str) -> anyhow::Result<()> {
+    pub fn remove(&mut self, name: &str) -> Result<(), Error> {
         println!("Removing {name} on {0}", self.image_name);
         self.directory.remove_entry(name)?;
         self.disk.write_blocks(2, &self.directory.to_bytes());
@@ -138,7 +145,7 @@ impl<D: WritableDiskImage> Volume<D> {
         to_image: bool,
         is_text: bool,
         preserve_date: bool,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), Error> {
         if to_image {
             println!("Copying {name} to {0}", self.image_name);
             // `name` may be a full host path (e.g. run from another
@@ -150,15 +157,18 @@ impl<D: WritableDiskImage> Volume<D> {
             let volume_name = std::path::Path::new(name)
                 .file_name()
                 .and_then(|n| n.to_str())
-                .ok_or_else(|| anyhow::anyhow!("{name} has no valid file name"))?
+                .ok_or_else(|| Error::NoFileName {
+                    name: name.to_string(),
+                })?
                 .to_ascii_uppercase();
-            anyhow::ensure!(
-                volume_name.len() < ENTRY_NAME_SIZE,
-                "\"{volume_name}\" is {0} characters, but p-System volume filenames \
-                 are limited to {1} characters -- rename the file and try again",
-                volume_name.len(),
-                ENTRY_NAME_SIZE - 1
-            );
+            if volume_name.len() >= ENTRY_NAME_SIZE {
+                let len = volume_name.len();
+                return Err(Error::FileNameTooLong {
+                    name: volume_name,
+                    len,
+                    limit: ENTRY_NAME_SIZE - 1,
+                });
+            }
             let host_bytes = std::fs::read(name)?;
             // bytes_in_last_block means different things for the two file
             // types. For a data file it's load-bearing: extraction trims to
@@ -181,16 +191,20 @@ impl<D: WritableDiskImage> Volume<D> {
                 (b, FILE_TYPE_DATAFILE, bytes_in_last_block(content_len))
             };
             let blocks_needed_total = block_bytes.len() / BLOCK_SIZE;
-            anyhow::ensure!(
-                blocks_needed_total <= self.directory.volume.num_blocks as usize,
-                "{name} needs {blocks_needed_total} blocks, but the volume only has {0} blocks total",
-                self.directory.volume.num_blocks
-            );
+            if blocks_needed_total > self.directory.volume.num_blocks as usize {
+                return Err(Error::NotEnoughSpaceTotal {
+                    name: name.to_string(),
+                    needed: blocks_needed_total,
+                    available: self.directory.volume.num_blocks as usize,
+                });
+            }
             let blocks_needed = blocks_needed_total as u16;
             let start_block = self
                 .directory
                 .find_free_range(blocks_needed)
-                .ok_or_else(|| anyhow::anyhow!("not enough contiguous free space for {name}"))?;
+                .ok_or_else(|| Error::NoContiguousSpace {
+                    name: name.to_string(),
+                })?;
             let date = if preserve_date {
                 systime_to_pdate(std::fs::metadata(name)?.modified()?)?
             } else {
@@ -251,7 +265,10 @@ impl<D: WritableDiskImage> Volume<D> {
                     return Ok(());
                 }
             }
-            anyhow::bail!("{name} was not found on {0}", self.image_name)
+            Err(Error::FileNotFoundOnImage {
+                name: name.to_string(),
+                image_name: self.image_name.clone(),
+            })
         }
     }
 
@@ -260,16 +277,16 @@ impl<D: WritableDiskImage> Volume<D> {
     // transfer's to-image path validates one (see the volume_name
     // handling above) -- both are subject to the same 15-character,
     // conventionally-uppercase p-System naming rule.
-    pub fn change(&mut self, from: &str, to: &str) -> anyhow::Result<()> {
+    pub fn change(&mut self, from: &str, to: &str) -> Result<(), Error> {
         println!("Renaming {from} to {to} on {0}", self.image_name);
         let to_upper = to.to_ascii_uppercase();
-        anyhow::ensure!(
-            to_upper.len() < ENTRY_NAME_SIZE,
-            "\"{to_upper}\" is {0} characters, but p-System volume filenames \
-             are limited to {1} characters",
-            to_upper.len(),
-            ENTRY_NAME_SIZE - 1
-        );
+        if to_upper.len() >= ENTRY_NAME_SIZE {
+            return Err(Error::RenameTargetTooLong {
+                len: to_upper.len(),
+                name: to_upper,
+                limit: ENTRY_NAME_SIZE - 1,
+            });
+        }
         self.directory.rename_entry(from, &to_upper)?;
         self.disk.write_blocks(2, &self.directory.to_bytes());
         self.save()?;
@@ -287,7 +304,7 @@ impl<D: WritableDiskImage> Volume<D> {
     // move's destination never reaches into a later entry's still-unread
     // source blocks) depends on each entry being fully read before any
     // subsequent write.
-    pub fn krunch(&mut self) -> anyhow::Result<()> {
+    pub fn krunch(&mut self) -> Result<(), Error> {
         println!("Consolidating free space on {0}", self.image_name);
         for mv in self.directory.compact() {
             let block_bytes = self
@@ -315,17 +332,17 @@ impl<D: WritableDiskImage> Volume<D> {
     // renames a file (uppercased, length-checked -- but against
     // VOLUME_NAME_SIZE, not ENTRY_NAME_SIZE, since the volume header's
     // name field is only 7 characters wide, shorter than a file's 15).
-    pub fn zero(&mut self, new_name: Option<&str>) -> anyhow::Result<()> {
+    pub fn zero(&mut self, new_name: Option<&str>) -> Result<(), Error> {
         println!("Clearing directory on {0}", self.image_name);
         if let Some(name) = new_name {
             let name_upper = name.to_ascii_uppercase();
-            anyhow::ensure!(
-                name_upper.len() < VOLUME_NAME_SIZE,
-                "\"{name_upper}\" is {0} characters, but p-System volume names \
-                 are limited to {1} characters",
-                name_upper.len(),
-                VOLUME_NAME_SIZE - 1
-            );
+            if name_upper.len() >= VOLUME_NAME_SIZE {
+                return Err(Error::VolumeNameTooLong {
+                    len: name_upper.len(),
+                    name: name_upper,
+                    limit: VOLUME_NAME_SIZE - 1,
+                });
+            }
             self.directory.set_volume_name(&name_upper)?;
         }
         self.directory.volume.num_files = 0;

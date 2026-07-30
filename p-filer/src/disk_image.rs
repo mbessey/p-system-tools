@@ -15,5 +15,5 @@ pub trait DiskImage {
 pub trait WritableDiskImage: DiskImage {
     // `data.len()` must be a multiple of 512.
     fn write_blocks(&mut self, index: usize, data: &[u8]);
-    fn save(&self) -> anyhow::Result<()>;
+    fn save(&self) -> Result<(), crate::error::Error>;
 }

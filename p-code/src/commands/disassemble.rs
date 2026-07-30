@@ -36,18 +36,19 @@ struct DisplayOptions {
 ///   See `disassembler::resolve` for the addressing algorithm and its
 ///   limits (XJP's per-case table is never labeled).
 ///
-/// Returns an error if `file_name` can't be read or its segment dictionary
-/// doesn't parse (`SegmentDictionary::parse`'s error conditions). A
-/// segment whose procedure dictionary doesn't parse isn't an error -- it's
-/// reported inline and disassembly falls back to a flat, unresolved decode
-/// of the whole segment (jump resolution needs a procedure's `jtab_addr`,
-/// which isn't available without a parsed dictionary).
+/// Returns `Error::Io` if `file_name` can't be read, or `Error::Format` if
+/// its segment dictionary doesn't parse (`SegmentDictionary::parse`'s error
+/// conditions). A segment whose procedure dictionary doesn't parse isn't an
+/// error -- it's reported inline and disassembly falls back to a flat,
+/// unresolved decode of the whole segment (jump resolution needs a
+/// procedure's `jtab_addr`, which isn't available without a parsed
+/// dictionary).
 pub fn run(
     file_name: String,
     show_offsets: bool,
     show_bytes: bool,
     show_labels: bool,
-) -> anyhow::Result<()> {
+) -> Result<(), crate::error::Error> {
     let opts = DisplayOptions {
         offsets: show_offsets,
         bytes: show_bytes,
