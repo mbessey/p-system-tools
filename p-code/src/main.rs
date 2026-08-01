@@ -24,6 +24,9 @@ struct MainArgs {
 enum Commands {
     List,
     Disassemble {
+        /// Show each instruction's offset within the file
+        #[arg(long)]
+        file_offsets: bool,
         /// Show each instruction's offset within the segment
         #[arg(long)]
         offsets: bool,
@@ -34,6 +37,11 @@ enum Commands {
         /// (shown by default)
         #[arg(long)]
         no_labels: bool,
+        /// Show any bytes the disassembler couldn't prove reachable (both
+        /// gaps mid-procedure and the run right before it), plus each
+        /// procedure's own JTAB footer (its raw bytes, following its code)
+        #[arg(long)]
+        footers: bool,
     },
 }
 
@@ -58,10 +66,19 @@ fn run() -> Result<(), Error> {
     match &args.command {
         Commands::List => commands::list::run(file_name)?,
         Commands::Disassemble {
+            file_offsets,
             offsets,
             bytes,
             no_labels,
-        } => commands::disassemble::run(file_name, *offsets, *bytes, !*no_labels)?,
+            footers,
+        } => commands::disassemble::run(
+            file_name,
+            *file_offsets,
+            *offsets,
+            *bytes,
+            !*no_labels,
+            *footers,
+        )?,
     }
     Ok(())
 }

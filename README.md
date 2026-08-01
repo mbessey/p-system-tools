@@ -82,15 +82,18 @@ p-code --code-file <CODE_FILE> <COMMAND>
 | Command | Description |
 |---|---|
 | `list` | Print the file's copyright string and a table of its segments (name, address, length, kind, and packed segment-info: unit number, code type, version). |
-| `disassemble [--offsets] [--bytes] [--no-labels]` | Disassemble the p-code in the file. Pass `--offsets` to show each instruction's offset within its segment; pass `--bytes` to show each instruction's raw hex bytes; pass `--no-labels` to turn off jump-target labels and resolved-target operand text (shown by default). The flags are independent and can be combined. *(`XJP`'s per-case jump table isn't resolved to labels — its addressing convention isn't confirmed; see [`docs/p-code-jumps-and-standard-calls.md`](docs/p-code-jumps-and-standard-calls.md))* |
+| `disassemble [--file-offsets] [--offsets] [--bytes] [--no-labels] [--footers]` | Disassemble the p-code in the file. Within a segment, procedures are printed in code-address order (not procedure-number order), so offsets always increase top-to-bottom. `CXP` (call external procedure) operands are annotated with the target segment's name when it can be resolved: `{SYSTEM}` for unit 0 (System.Library — not present in the codefile, so never further resolved), or the codefile's own segment name for units 1–15 that are active in its own segment dictionary. Pass `--file-offsets` to show each instruction's offset within the whole codefile; pass `--offsets` to show each instruction's offset within its segment (shown to the right of `--file-offsets` when both are given); pass `--bytes` to show each instruction's raw hex bytes; pass `--no-labels` to turn off jump-target labels and resolved-target operand text (shown by default); pass `--footers` to print each procedure's on-disk JTAB footer (raw hex; its fields are already shown decoded in the "Procedure N (...)" line above the code), plus any bytes `trace_reachable` couldn't prove reachable — both a final run before the footer and any gaps mid-procedure — instead of silently skipping those regions. The flags are independent and can be combined. *(`XJP`'s per-case jump table isn't resolved to labels — its addressing convention isn't confirmed; see [`docs/p-code-jumps-and-standard-calls.md`](docs/p-code-jumps-and-standard-calls.md))* |
 
 ### Examples
 
 ```sh
 p-code --code-file tests/HelloWorld.code list
 
-# Disassemble with both offsets and raw hex bytes shown
-p-code --code-file tests/HelloWorld.code disassemble --offsets --bytes
+# Disassemble with file offset, segment offset, and raw hex bytes all shown
+p-code --code-file tests/HelloWorld.code disassemble --file-offsets --offsets --bytes
+
+# Disassemble with each procedure's on-disk JTAB footer shown after its code
+p-code --code-file tests/HelloWorld.code disassemble --file-offsets --footers
 ```
 
 ## Tests
