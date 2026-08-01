@@ -139,9 +139,47 @@ impl<D: WritableDiskImage> Volume<D> {
         Ok(())
     }
 
+    /// Copies a file between the host filesystem and this volume, matching
+    /// the real Filer's Transfer command plus `cp`-like destination
+    /// handling.
+    ///
+    /// - `name`: the source -- a host path when `to_image` (only its final
+    ///   path component becomes the volume filename, since volume
+    ///   filenames have no directory concept), or a volume filename when
+    ///   extracting. Volume-side lookups are case-insensitive, matching the
+    ///   real Filer (every stored volume filename is uppercase): `name` is
+    ///   uppercased before comparing against directory entries.
+    /// - `dest`: like `cp`'s second argument. `None` means: reuse `name`'s
+    ///   basename as the volume filename (`to_image`), or write to a host
+    ///   file literally named `name` (extracting). `Some(d)`: on
+    ///   `to_image`, `d`'s basename becomes the volume filename instead of
+    ///   `name`'s; when extracting, an existing directory at `d` copies in
+    ///   under the matched entry's own name, otherwise `d` is the exact
+    ///   host path to write.
+    /// - `to_image`: direction -- `true` copies host to volume, `false`
+    ///   copies volume to host.
+    /// - `is_text`: whether to run the p-System text encoding/decoding pass
+    ///   (CR/RLE translation) rather than copying bytes verbatim.
+    /// - `preserve_date`: on `to_image`, stamp the new entry with the host
+    ///   file's modified time instead of now; on extraction, restore the
+    ///   entry's date onto the written host file's modified time
+    ///   (best-effort -- failures are ignored here, same as `remove`'s
+    ///   tolerance for non-load-bearing metadata operations).
+    ///
+    /// Returns `Error::NoFileName` if `name` (or `dest`, when given and used
+    /// as a `to_image` volume filename) has no extractable final path
+    /// component; `Error::FileNameTooLong` if the resulting volume filename
+    /// exceeds the 15-character limit; `Error::NameAlreadyExists` /
+    /// `Error::DirectoryFull` from the underlying `Directory::add_entry`
+    /// call; `Error::NotEnoughSpaceTotal` / `Error::NoContiguousSpace` if
+    /// the volume can't fit the file; `Error::FileNotFoundOnImage` if
+    /// extracting a name with no matching entry; and `Error::Io` /
+    /// `Error::Format` for the underlying host I/O and p-System primitive
+    /// encoding calls.
     pub fn transfer(
         &mut self,
         name: &str,
+        dest: Option<&str>,
         to_image: bool,
         is_text: bool,
         preserve_date: bool,
@@ -151,14 +189,19 @@ impl<D: WritableDiskImage> Volume<D> {
             // `name` may be a full host path (e.g. run from another
             // directory); only its final component is meaningful as a
             // p-System volume filename, which is limited to 15 characters.
-            // Uppercase it: the Filer can display a lowercase name, but the
-            // Editor and other system tools don't handle them well, so
-            // volume filenames are conventionally all-uppercase.
-            let volume_name = std::path::Path::new(name)
+            // `dest`, when given, overrides this entirely -- it's the
+            // intended volume filename, not a host path, but its final
+            // component is still taken (in case someone passes something
+            // path-shaped by mistake). Both are uppercased: the Filer can
+            // display a lowercase name, but the Editor and other system
+            // tools don't handle them well, so volume filenames are
+            // conventionally all-uppercase.
+            let source_for_naming = dest.unwrap_or(name);
+            let volume_name = std::path::Path::new(source_for_naming)
                 .file_name()
                 .and_then(|n| n.to_str())
                 .ok_or_else(|| Error::NoFileName {
-                    name: name.to_string(),
+                    name: source_for_naming.to_string(),
                 })?
                 .to_ascii_uppercase();
             if volume_name.len() >= ENTRY_NAME_SIZE {
@@ -221,23 +264,42 @@ impl<D: WritableDiskImage> Volume<D> {
             self.disk.write_blocks(start_block as usize, &block_bytes);
             self.disk.write_blocks(2, &self.directory.to_bytes());
             self.save()?;
-            println!("Wrote {name} to {0}", self.image_name);
+            println!("Wrote {volume_name} to {0}", self.image_name);
             Ok(())
         } else {
             println!("Copying {name} from {0}", self.image_name);
+            // Real volume filenames are always uppercase, and the real
+            // Filer matches user input case-insensitively against them --
+            // without this, typing a lowercase name (or one with different
+            // casing than the volume entry) would report "not found" even
+            // though the file is right there.
+            let name_upper = name.to_ascii_uppercase();
             let num_files = self.directory.volume.num_files as usize;
             for entry in &self.directory.entries[..num_files] {
                 let entry_name = from_length_prefixed(&entry.name);
-                if entry_name == name {
-                    println!("Found {name} at block {0}", entry.first_block);
+                if entry_name == name_upper {
+                    println!("Found {entry_name} at block {0}", entry.first_block);
                     let num_blocks_in_file = entry.block_count();
                     let file_buffer = self
                         .disk
                         .read_blocks(entry.first_block as usize, num_blocks_in_file);
-                    let file_name = name.to_string();
+                    // Like `cp`: an existing directory as the destination
+                    // means "copy in, keeping the source's own name" (the
+                    // volume entry's real name, not necessarily whatever
+                    // case `name` was typed in); anything else is the
+                    // exact destination path to write; omitted means write
+                    // to a host file literally named `name`, matching this
+                    // command's behavior before `dest` existed.
+                    let file_path: std::path::PathBuf = match dest {
+                        Some(d) if std::path::Path::new(d).is_dir() => {
+                            std::path::Path::new(d).join(&entry_name)
+                        }
+                        Some(d) => std::path::PathBuf::from(d),
+                        None => std::path::PathBuf::from(name),
+                    };
                     // Because we want to possibly use set_times, we'll
                     // have to use more conventional File:: methods.
-                    let mut filedesc = File::create(file_name)?;
+                    let mut filedesc = File::create(&file_path)?;
                     if is_text {
                         let text_buffer = text_from_blocks(file_buffer);
                         let _ = filedesc.write(text_buffer.as_slice());
@@ -257,7 +319,7 @@ impl<D: WritableDiskImage> Volume<D> {
                         .min(file_buffer.len());
                         let _ = filedesc.write(&file_buffer[..trimmed_len]);
                     }
-                    println!("Wrote {name} to disk");
+                    println!("Wrote {entry_name} to {}", file_path.display());
                     if preserve_date {
                         let _ = filedesc.set_modified(pdate_to_systime(entry.date));
                     }
@@ -411,7 +473,7 @@ mod tests {
             // basename should end up as the volume's directory entry name,
             // since full paths routinely exceed the 15-character limit.
             volume
-                .transfer(host_path.to_str().unwrap(), true, true, false)
+                .transfer(host_path.to_str().unwrap(), None, true, true, false)
                 .unwrap();
 
             let reopened = open_volume(&image_path);
@@ -432,12 +494,38 @@ mod tests {
             // other system tools don't handle them well -- volume names
             // should always be uppercased regardless of host file casing.
             volume
-                .transfer("FeatureDemo.pas", true, true, false)
+                .transfer("FeatureDemo.pas", None, true, true, false)
                 .unwrap();
 
             let reopened = open_volume(&image_path);
             let entry = &reopened.directory.entries[0];
             assert_eq!(from_length_prefixed(&entry.name), "FEATUREDEMO.PAS");
+        });
+    }
+
+    #[test]
+    fn transfer_to_image_dest_overrides_the_volume_filename() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("empty.dsk"), &image_path).unwrap();
+            std::fs::write("source.pas", "hi\n").unwrap();
+
+            let mut volume = open_volume(&image_path);
+            // Like `cp source.pas RENAMED.TEXT` -- the host file read from
+            // is still source.pas, but the volume entry should take dest's
+            // name instead of source.pas's own basename.
+            volume
+                .transfer("source.pas", Some("renamed.text"), true, true, false)
+                .unwrap();
+
+            let reopened = open_volume(&image_path);
+            let num_files = reopened.directory.volume.num_files as usize;
+            assert_eq!(num_files, 1);
+            // dest is uppercased the same way the no-dest basename path is.
+            assert_eq!(
+                from_length_prefixed(&reopened.directory.entries[0].name),
+                "RENAMED.TEXT"
+            );
         });
     }
 
@@ -451,7 +539,7 @@ mod tests {
 
             let mut volume = open_volume(&image_path);
             let err = volume
-                .transfer("SIXTEEN_CHARS.TX", true, true, false)
+                .transfer("SIXTEEN_CHARS.TX", None, true, true, false)
                 .unwrap_err();
             let message = err.to_string();
             assert!(message.contains("SIXTEEN_CHARS.TX"));
@@ -470,7 +558,9 @@ mod tests {
             std::fs::write("MIDDLE.TEXT", "fits in the gap after WORK.TEXT\n").unwrap();
 
             let mut volume = open_volume(&image_path);
-            volume.transfer("MIDDLE.TEXT", true, true, false).unwrap();
+            volume
+                .transfer("MIDDLE.TEXT", None, true, true, false)
+                .unwrap();
 
             let reopened = open_volume(&image_path);
             let num_files = reopened.directory.volume.num_files as usize;
@@ -495,7 +585,9 @@ mod tests {
             std::fs::write("HELLO.TEXT", "hello p-system\nsecond line\n").unwrap();
 
             let mut volume = open_volume(&image_path);
-            volume.transfer("HELLO.TEXT", true, true, false).unwrap();
+            volume
+                .transfer("HELLO.TEXT", None, true, true, false)
+                .unwrap();
 
             let mut reopened = open_volume(&image_path);
             assert_eq!(reopened.directory.volume.num_files, 1);
@@ -509,7 +601,9 @@ mod tests {
             assert_eq!(entry.bytes_in_last_block, 512);
 
             std::fs::remove_file("HELLO.TEXT").unwrap();
-            reopened.transfer("HELLO.TEXT", false, true, false).unwrap();
+            reopened
+                .transfer("HELLO.TEXT", None, false, true, false)
+                .unwrap();
             let round_tripped = std::fs::read_to_string("HELLO.TEXT").unwrap();
             assert_eq!(round_tripped, "hello p-system\nsecond line\n");
         });
@@ -524,7 +618,9 @@ mod tests {
             std::fs::write("DATA.DATA", &data).unwrap();
 
             let mut volume = open_volume(&image_path);
-            volume.transfer("DATA.DATA", true, false, false).unwrap();
+            volume
+                .transfer("DATA.DATA", None, true, false, false)
+                .unwrap();
 
             let mut reopened = open_volume(&image_path);
             let entry = &reopened.directory.entries[0];
@@ -532,7 +628,9 @@ mod tests {
             assert_eq!(entry.first_after_block - entry.first_block, 2);
 
             std::fs::remove_file("DATA.DATA").unwrap();
-            reopened.transfer("DATA.DATA", false, false, false).unwrap();
+            reopened
+                .transfer("DATA.DATA", None, false, false, false)
+                .unwrap();
             let round_tripped = std::fs::read("DATA.DATA").unwrap();
             assert_eq!(round_tripped, data);
         });
@@ -549,14 +647,18 @@ mod tests {
             std::fs::write("ODD.DATA", &data).unwrap();
 
             let mut volume = open_volume(&image_path);
-            volume.transfer("ODD.DATA", true, false, false).unwrap();
+            volume
+                .transfer("ODD.DATA", None, true, false, false)
+                .unwrap();
 
             let mut reopened = open_volume(&image_path);
             let entry = &reopened.directory.entries[0];
             assert_eq!(entry.bytes_in_last_block, 700 % 512);
 
             std::fs::remove_file("ODD.DATA").unwrap();
-            reopened.transfer("ODD.DATA", false, false, false).unwrap();
+            reopened
+                .transfer("ODD.DATA", None, false, false, false)
+                .unwrap();
             let round_tripped = std::fs::read("ODD.DATA").unwrap();
             assert_eq!(round_tripped, data);
         });
@@ -570,7 +672,9 @@ mod tests {
             std::fs::write("EMPTY.DATA", b"").unwrap();
 
             let mut volume = open_volume(&image_path);
-            volume.transfer("EMPTY.DATA", true, false, false).unwrap();
+            volume
+                .transfer("EMPTY.DATA", None, true, false, false)
+                .unwrap();
 
             let reopened = open_volume(&image_path);
             let entry = &reopened.directory.entries[0];
@@ -592,7 +696,7 @@ mod tests {
             std::fs::write("HUGE.DATA", &data).unwrap();
 
             let mut volume = open_volume(&image_path);
-            let err = volume.transfer("HUGE.DATA", true, false, false);
+            let err = volume.transfer("HUGE.DATA", None, true, false, false);
             assert!(err.is_err());
         });
     }
@@ -605,7 +709,11 @@ mod tests {
             std::fs::write("WORK.TEXT", "hi\n").unwrap();
 
             let mut volume = open_volume(&image_path);
-            assert!(volume.transfer("WORK.TEXT", true, true, false).is_err());
+            assert!(
+                volume
+                    .transfer("WORK.TEXT", None, true, true, false)
+                    .is_err()
+            );
         });
     }
 
@@ -619,9 +727,66 @@ mod tests {
             // Forgetting --to-image (to_image: false) on an empty volume
             // used to silently succeed without writing anything.
             let err = volume
-                .transfer("NOTHERE.TEXT", false, true, false)
+                .transfer("NOTHERE.TEXT", None, false, true, false)
                 .unwrap_err();
             assert!(err.to_string().contains("NOTHERE.TEXT"));
+        });
+    }
+
+    #[test]
+    fn transfer_from_image_matches_case_insensitively() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("blog.dsk"), &image_path).unwrap();
+
+            let mut volume = open_volume(&image_path);
+            // blog.dsk's entry is stored as "WORK.TEXT" (all volume
+            // filenames are uppercase); typing it in lowercase should still
+            // find it, matching the real Filer's case-insensitive matching.
+            volume
+                .transfer("work.text", None, false, true, false)
+                .unwrap();
+
+            // dest was None, so the host file is written under exactly
+            // what was typed, not the entry's own (uppercase) name.
+            assert!(std::fs::read_to_string("work.text").is_ok());
+        });
+    }
+
+    #[test]
+    fn transfer_from_image_dest_directory_copies_in_under_the_entrys_own_name() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("blog.dsk"), &image_path).unwrap();
+            let dest_dir = dir.join("out");
+            std::fs::create_dir(&dest_dir).unwrap();
+
+            let mut volume = open_volume(&image_path);
+            // Like `cp WORK.TEXT out/` -- an existing directory as dest
+            // means "copy in, keeping the source's own name" (the volume
+            // entry's real, uppercase name -- not whatever case `name` was
+            // typed in).
+            volume
+                .transfer("work.text", dest_dir.to_str(), false, true, false)
+                .unwrap();
+
+            assert!(std::fs::read_to_string(dest_dir.join("WORK.TEXT")).is_ok());
+        });
+    }
+
+    #[test]
+    fn transfer_from_image_dest_file_path_overrides_the_output_name() {
+        in_temp_dir(|dir| {
+            let image_path = dir.join("scratch.dsk");
+            std::fs::copy(fixture_path("blog.dsk"), &image_path).unwrap();
+
+            let mut volume = open_volume(&image_path);
+            volume
+                .transfer("WORK.TEXT", Some("renamed_on_host.txt"), false, true, false)
+                .unwrap();
+
+            assert!(std::fs::read_to_string("renamed_on_host.txt").is_ok());
+            assert!(!std::path::Path::new("WORK.TEXT").exists());
         });
     }
 
@@ -636,7 +801,11 @@ mod tests {
             std::fs::write("BIGFILE.DATA", &data).unwrap();
 
             let mut volume = open_volume(&image_path);
-            assert!(volume.transfer("BIGFILE.DATA", true, false, false).is_err());
+            assert!(
+                volume
+                    .transfer("BIGFILE.DATA", None, true, false, false)
+                    .is_err()
+            );
         });
     }
 
@@ -695,10 +864,14 @@ mod tests {
 
             let mut reopened = open_volume(&image_path);
             // The old name is gone...
-            assert!(reopened.transfer("SHORT.TEXT", false, true, false).is_err());
+            assert!(
+                reopened
+                    .transfer("SHORT.TEXT", None, false, true, false)
+                    .is_err()
+            );
             // ...but the file is still readable under its new name.
             reopened
-                .transfer("RENAMED.TEXT", false, true, false)
+                .transfer("RENAMED.TEXT", None, false, true, false)
                 .unwrap();
             assert!(std::fs::read_to_string("RENAMED.TEXT").is_ok());
         });
@@ -735,7 +908,9 @@ mod tests {
             // Capture WORK.TEXT's content before krunching so it can be
             // compared against what's readable afterwards.
             let mut before = open_volume(&image_path);
-            before.transfer("WORK.TEXT", false, true, false).unwrap();
+            before
+                .transfer("WORK.TEXT", None, false, true, false)
+                .unwrap();
             let work_before = std::fs::read_to_string("WORK.TEXT").unwrap();
             std::fs::remove_file("WORK.TEXT").unwrap();
 
@@ -753,7 +928,9 @@ mod tests {
                 cursor = entry.first_after_block;
             }
 
-            reopened.transfer("WORK.TEXT", false, true, false).unwrap();
+            reopened
+                .transfer("WORK.TEXT", None, false, true, false)
+                .unwrap();
             let work_after = std::fs::read_to_string("WORK.TEXT").unwrap();
             assert_eq!(work_before, work_after);
         });
