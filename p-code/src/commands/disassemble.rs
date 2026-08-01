@@ -8,7 +8,7 @@
 use crate::disassembler::instruction::Instruction;
 use crate::disassembler::procedure_dict::ProcedureInfo;
 use crate::disassembler::{self, Mnemonic, Operand};
-use crate::segment_dictionary::SegmentDictionary;
+use crate::segment_dictionary::{SegmentCodeType, SegmentDictionary};
 use p_system_format::pascal_string::from_space_padded;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -75,7 +75,10 @@ struct SegmentContext<'a> {
 /// error -- it's reported inline and disassembly falls back to a flat,
 /// unresolved decode of the whole segment (jump resolution needs a
 /// procedure's `jtab_addr`, which isn't available without a parsed
-/// dictionary).
+/// dictionary). A segment whose `seg_info` marks it as native machine code
+/// (see `SegmentCodeType::Native`) is reported inline too, and skipped
+/// entirely rather than fed to the p-code decoder -- its bytes aren't
+/// p-code, so decoding them would produce mnemonics that merely look valid.
 pub fn run(
     file_name: String,
     show_file_offsets: bool,
@@ -117,6 +120,19 @@ pub fn run(
         }
         if show_offsets {
             println!("  (offset within segment; segment starts at file offset {start:#x})");
+        }
+        if segment_dictionary.code_type(s) == SegmentCodeType::Native {
+            // Native segments (e.g. SYSTEM.LIBRARY's hand-written 6502
+            // intrinsics for long-integer math / turtle graphics / Apple
+            // I/O) aren't p-code at all -- decoding their bytes with the
+            // p-code decoder would silently produce plausible-looking but
+            // meaningless mnemonics, since many raw 6502 opcode bytes also
+            // happen to be valid p-code opcodes. Report the gap explicitly
+            // instead (see CLAUDE.md's "never let a silent gap look like a
+            // finished feature").
+            println!("  (native code segment, not disassembled)");
+            println!();
+            continue;
         }
         match disassembler::parse_procedure_dictionary(segment_bytes) {
             Some(dict) => {

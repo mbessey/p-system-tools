@@ -121,6 +121,12 @@ impl SegmentDictionary {
         SegmentKind::try_from(self.seg_kind[slot])
     }
 
+    /// Which instruction set `slot`'s code is written in (p-code vs. native
+    /// machine code) -- see `SegmentCodeType`.
+    pub fn code_type(&self, slot: usize) -> SegmentCodeType {
+        SegmentCodeType::from_segment_info(self.seg_info[slot])
+    }
+
     pub fn active_segments(&self) -> impl Iterator<Item = (usize, CodeInfo, String)> + '_ {
         (0..16).filter_map(move |s| {
             let code_info = self.code_info[s];
@@ -136,14 +142,41 @@ impl SegmentDictionary {
     }
 }
 
+/// Which instruction set a segment's code is written in, decoded from the
+/// `seg_info` bitfield's type nibble (bits 8-11). Distinct segments in the
+/// same codefile can differ here: e.g. SYSTEM.LIBRARY's math/graphics/IO
+/// intrinsics are hand-written 6502 assembly for speed, alongside ordinary
+/// p-code segments compiled from Pascal -- see `SegmentDictionary::code_type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegmentCodeType {
+    Unknown,
+    PcodeBigEndian,
+    PcodeLittleEndian,
+    /// The segment's code is native machine code for the host processor
+    /// (6502 on Apple Pascal), not p-code -- `p-code disassemble` can't
+    /// decode this, since its decoder only knows the p-machine's
+    /// instruction set.
+    Native,
+}
+
+impl SegmentCodeType {
+    fn from_segment_info(segment_info: u16) -> Self {
+        match (segment_info & 0x0f00) >> 8 {
+            0 => SegmentCodeType::Unknown,
+            1 => SegmentCodeType::PcodeBigEndian,
+            2 => SegmentCodeType::PcodeLittleEndian,
+            _ => SegmentCodeType::Native,
+        }
+    }
+}
+
 pub fn string_from_segment_info(segment_info: u16) -> String {
     let unit = segment_info & 0xff;
-    let code_type = (segment_info & 0x0f00) >> 8;
-    let type_s = match code_type {
-        0 => "Unknown",
-        1 => "Pcode Big-endian",
-        2 => "Pcode Little-endian",
-        _ => "Native code",
+    let type_s = match SegmentCodeType::from_segment_info(segment_info) {
+        SegmentCodeType::Unknown => "Unknown",
+        SegmentCodeType::PcodeBigEndian => "Pcode Big-endian",
+        SegmentCodeType::PcodeLittleEndian => "Pcode Little-endian",
+        SegmentCodeType::Native => "Native code",
     };
     let version = (segment_info & 0xe000) >> 13;
     format!("[unit: {}, type: {}, version: {}]", unit, type_s, version)
